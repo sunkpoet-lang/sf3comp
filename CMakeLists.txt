@@ -33,6 +33,20 @@ else ()
     find_package(SDL3 REQUIRED CONFIG)
 endif ()
 file(STRINGS "${CMAKE_SOURCE_DIR}/VERSION" RECOMP_VERSION LIMIT_COUNT 1)
+# (ForkAde) The commit the program is built from (and "-dirty" with changes not committed), in online play's build
+# check (port/netplay.cpp): two programs of other commits refuse each other even with the same VERSION.
+# -DFORKADE_BUILD_ID=... says another; read again each time CMake is run (the build script always runs it).
+if (FORKADE_BUILD_ID)
+    set(FORKADE_BUILD "${FORKADE_BUILD_ID}")
+else ()
+    execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE FORKADE_BUILD OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND git status --porcelain --untracked-files=no WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE FORKADE_CHANGES OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if (FORKADE_CHANGES)
+        string(APPEND FORKADE_BUILD "-dirty")
+    endif ()
+endif ()
 
 # game.cfg's values as GAME_<KEY> strings
 add_custom_command(OUTPUT "${WORK_DIR}/game_cfg.h"
@@ -152,7 +166,7 @@ if (ANDROID)
     target_link_libraries(${GAME} PRIVATE log)
 endif ()
 target_compile_options(${GAME} PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unused-label -Wno-unused-variable)
-target_compile_definitions(${GAME} PRIVATE RECOMP_VERSION="${RECOMP_VERSION}")
+target_compile_definitions(${GAME} PRIVATE RECOMP_VERSION="${RECOMP_VERSION}" FORKADE_BUILD="${FORKADE_BUILD}")
 
 # The launcher (cps3recomp/launcher; recomp-common's), told about the game from its game.cfg
 function(game_cfg key out)

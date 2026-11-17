@@ -145,6 +145,10 @@ namespace {
         h = crc32(h, reinterpret_cast<const Bytef *>(GAME_BIOS), static_cast<uInt>(strlen(GAME_BIOS)));
         h = crc32(h, reinterpret_cast<const Bytef *>(GAME_SIMM1), static_cast<uInt>(strlen(GAME_SIMM1)));
         h = crc32(h, reinterpret_cast<const Bytef *>(GAME_SIMM2), static_cast<uInt>(strlen(GAME_SIMM2)));
+#ifdef FORKADE_BUILD
+        // (ForkAde: and the commit the program is built from, CMakeLists.txt: the code itself, not only the set)
+        h = crc32(h, reinterpret_cast<const Bytef *>(FORKADE_BUILD), static_cast<uInt>(strlen(FORKADE_BUILD)));
+#endif
         return static_cast<uint32_t>(h);
     }
 #ifndef GAME_ONLINE_WORDS
