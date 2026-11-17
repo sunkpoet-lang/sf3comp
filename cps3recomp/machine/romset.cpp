@@ -202,7 +202,8 @@ bool LoadRomSet(const std::string &path, const RomList &list, RomSet &set, std::
             beside = path;
         } else {
             zips.push_back(path);
-            const size_t slash = path.find_last_of('/');
+            // (ForkAde: a Windows path's folders may be split by backslashes too)
+            const size_t slash = path.find_last_of("/\\");
             beside = slash == std::string::npos ? "." : path.substr(0, slash);
         }
         for (const std::string &name : {list.set, list.parent}) {
