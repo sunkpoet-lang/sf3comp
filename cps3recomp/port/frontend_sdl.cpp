@@ -298,6 +298,9 @@ namespace {
     // in-game menu's rows, features and commands in its Game, Video, Input, Features and Help menus (Menu::
     // AddBarEntries), with the window's own entries: quick save and load, the screenshot, Game > Replay, full screen
     enum { kBarQuickSave = 1, kBarQuickLoad, kBarFullscreen, kBarAbout, kBarKey, kBarScreenshot, kBarRecordInput, kBarPlayInput, kBarStopReplay };
+    // (ForkAde, replay-viewer) The viewer's commands in Game > Replay while a replay plays: kBarViewer + the command, and
+    // its aids after them
+    constexpr int kBarViewer = 200, kBarViewerAid = 260;
     const char *const kBarKeys[][2] = {
         {"In-game menu", "Esc, F1"}, {"Menu bar", "F10, Alt"}, {"Quick save", "F5"}, {"Quick load", "F9"}, {"Slot before, next", "F6, F7"},
         {"Screenshot", "F12"}, {"Fullscreen", "F11"}, {"Test switch", "F2"}, {"Pause", "P"}, {"One frame", "O"},
@@ -349,6 +352,32 @@ namespace {
             replay.children.push_back(BarItem("Record input...", kBarRecordInput, "", !port.replay.playing && !recording));
             replay.children.push_back(BarItem("Play input...", kBarPlayInput));
             replay.children.push_back(BarItem("Stop replay/record", kBarStopReplay, "", port.replay.playing || recording));
+            if (port.replay.playing && port.viewer.Active() && !port.replay.anyTaken()) {
+                // (ForkAde, replay-viewer) the transport, as the keys and the HUD have it
+                using recomp::replay::Command;
+                const struct {
+                    const char *label;
+                    Command command;
+                    const char *keys;
+                } kViewer[] = {{port.viewer.Paused() ? "Play" : "Pause", Command::PlayPause, "Down"},
+                               {"Rewind (faster each time)", Command::Rewind, "Left"},
+                               {"Fast-forward (faster each time)", Command::Faster, "Right"},
+                               {"Slow motion (x0.75, x0.5, x0.25)", Command::Slower, "Up"},
+                               {"Frame back", Command::StepBack, ""}, {"Frame forward", Command::StepForward, ""},
+                               {"5 seconds back", Command::JumpBack, "LP"}, {"5 seconds forward", Command::JumpForward, "HP"},
+                               {"Previous round", Command::PreviousMarker, "LK"}, {"Next round", Command::NextMarker, "HK"},
+                               {"Loop: mark A, then B", Command::MarkA, "MP"}, {"Clear the loop", Command::ClearLoop, "MK"},
+                               {port.viewer.HudShown(port.tick) ? "Hide the HUD" : "Show the HUD", Command::ToggleHud, "V, Coin"}};
+                replay.children.push_back(recomp::BarEntry::Line());
+                for (const auto &one : kViewer) {
+                    replay.children.push_back(BarItem(one.label, kBarViewer + static_cast<int>(one.command), one.keys));
+                }
+                for (size_t i = 0; i < port.viewer.Aids().size(); i++) {
+                    const auto &aid = port.viewer.Aids()[i];
+                    const char *what = aid.name == "hit_boxes" ? "hit boxes" : aid.name == "input_display" ? "the input display" : "the frame meter";
+                    replay.children.push_back(BarItem((std::string(aid.on ? "Hide " : "Show ") + what).c_str(), kBarViewerAid + static_cast<int>(i), i == 0 ? "H" : ""));
+                }
+            }
             replay.enabled = !online;
             auto shot = std::find_if(game.begin(), game.end(), [](const recomp::BarEntry &e) { return e.id == kBarScreenshot; });
             game.insert(shot == game.end() ? game.end() : shot + 1, std::move(replay));
@@ -846,6 +875,10 @@ int RunWindowed(Port &port) {
             else SDL_ShowOpenFileDialog(ReplayDialogDone, kind, window, kReplayFilter, 1, where.empty() ? nullptr : where.c_str(), false);
         } else if (chosen.id == kBarStopReplay) {
             port.StopReplayOrRecord();
+        } else if (chosen.id >= kBarViewerAid && chosen.id < kBarViewerAid + 16) {
+            port.ViewerAid(static_cast<size_t>(chosen.id - kBarViewerAid));
+        } else if (chosen.id >= kBarViewer && chosen.id < kBarViewerAid) {
+            port.ViewerCommand(static_cast<recomp::replay::Command>(chosen.id - kBarViewer));
         }
         BarMenus(port, bar, window && IsFullScreen(window));
     };
@@ -870,6 +903,7 @@ int RunWindowed(Port &port) {
         barDirty = true;
     };
     // (the pointer's place in the window's pixels: events give it in the window's points)
+    SDL_FRect pictureWhere{0, 0, 1, 1}; // (ForkAde: where the picture was last drawn, in the window's pixels)
     auto pixelsOf = [&](float x, float y, float &px, float &py) {
         const float density = window && SDL_GetWindowPixelDensity(window) > 0 ? SDL_GetWindowPixelDensity(window) : 1.0f;
         px = x * density;
@@ -1039,6 +1073,11 @@ int RunWindowed(Port &port) {
                 if (!port.menu.IsOpen()) {
                     float x, y;
                     pixelsOf(ev.button.x, ev.button.y, x, y);
+                    // (ForkAde, replay-viewer) a click on the replay's HUD: its buttons, the timeline, the aids
+                    if (ev.button.button == SDL_BUTTON_LEFT && !bar.IsOpen() && !bar.Hit(x, y) && port.ViewerClick(
+                            (x - pictureWhere.x) / pictureWhere.w * port.ShownWidth(), (y - pictureWhere.y) / pictureWhere.h * Video::kHeight)) {
+                        break;
+                    }
                     if (ev.button.button == SDL_BUTTON_LEFT && (bar.IsOpen() || bar.Hit(x, y))) {
                         if (!bar.IsOpen()) {
                             barOpened();
@@ -1100,6 +1139,10 @@ int RunWindowed(Port &port) {
                     toggleMenu();
                 } else if (KeyBound(ev.key.scancode)) {
                     // (a key the player has given to the game does only that)
+                } else if (port.replay.playing && port.viewer.Active() && ev.key.scancode == SDL_SCANCODE_H && !ev.key.repeat) {
+                    port.ViewerAid(0); // (ForkAde, replay-viewer: the hit boxes)
+                } else if (port.replay.playing && port.viewer.Active() && ev.key.scancode == SDL_SCANCODE_V && !ev.key.repeat) {
+                    port.ViewerCommand(recomp::replay::Command::ToggleHud); // (ForkAde, replay-viewer: the HUD shown or hidden)
                 } else if (chatting() && ev.key.scancode == SDL_SCANCODE_T && !ev.key.repeat) {
                     chatOpen(true);
                     openedByT = port.typing ? SDL_GetTicks() : 0;
@@ -1409,6 +1452,7 @@ int RunWindowed(Port &port) {
         const int barStrip = (window && IsFullScreen(window)) || arcadeScreen ? 0 : BarStrip(height);
         SDL_FRect where = FitPicture(width, height - barStrip, port.ShownWidth(), Video::kHeight, arcadeScreen ? Shape::Fill : DisplayShape(), DisplayScaling());
         where.y += barStrip;
+        pictureWhere = where; // (ForkAde, replay-viewer: the HUD's clicks)
         // (the Display page's bezels under the picture: made again when they, the window's size or the picture's place
         // change; none on the arcade monitor, which the picture fills)
         {

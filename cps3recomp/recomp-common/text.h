@@ -40,6 +40,61 @@ inline constexpr uint8_t kFont[95][5] = {
   {0x00,0x00,0x7F,0x00,0x00}, {0x00,0x41,0x36,0x08,0x00}, {0x08,0x04,0x08,0x10,0x08},
 };
 
+// (ForkAde's fork) The Spanish letters and signs, for the in-game chat: a column per 16 bits, bit 0 two rows above
+// the cell (a capital's accent), bit 2 its top row; any other character outside ASCII is drawn as "?"
+struct ExtraGlyph {
+    uint32_t code;
+    uint16_t columns[5];
+};
+inline constexpr ExtraGlyph kSpanish[] = {
+  {0xE1, {0x080,0x150,0x154,0x152,0x1E0}}, {0xE9, {0x0E0,0x150,0x154,0x152,0x060}}, // á é
+  {0xED, {0x000,0x110,0x1F4,0x102,0x000}}, {0xF3, {0x0E0,0x110,0x114,0x112,0x0E0}}, // í ó
+  {0xFA, {0x0F0,0x100,0x104,0x082,0x1F0}}, {0xFC, {0x0F0,0x104,0x100,0x084,0x1F0}}, // ú ü
+  {0xF1, {0x1F4,0x022,0x014,0x012,0x1E0}}, {0xC1, {0x1F8,0x044,0x046,0x045,0x1F8}}, // ñ Á
+  {0xC9, {0x1FC,0x124,0x126,0x125,0x104}}, {0xCD, {0x000,0x104,0x1FE,0x105,0x000}}, // É Í
+  {0xD3, {0x0F8,0x104,0x106,0x105,0x0F8}}, {0xDA, {0x0FC,0x100,0x102,0x101,0x0FC}}, // Ó Ú
+  {0xDC, {0x0FC,0x102,0x100,0x102,0x0FC}}, {0xD1, {0x1FC,0x012,0x021,0x042,0x1FD}}, // Ü Ñ
+  {0xBF, {0x0C0,0x120,0x114,0x100,0x080}}, {0xA1, {0x000,0x000,0x1F4,0x000,0x000}}, // ¿ ¡
+};
+
+// (ForkAde's fork) The next character of UTF-8 text, and the bytes it takes; a byte that does not start a whole
+// character is one character of its own (drawn "?")
+inline uint32_t NextChar(const char *s, size_t left, size_t &used) {
+    const auto b = [&](size_t i) { return static_cast<unsigned char>(s[i]); };
+    const unsigned c = b(0);
+    size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+    if (n == 0 || n > left) {
+        used = 1;
+        return c < 0x80 ? c : 0xFFFD;
+    }
+    uint32_t code = n == 1 ? c : c & (0x7F >> n);
+    for (size_t i = 1; i < n; i++) {
+        if ((b(i) & 0xC0) != 0x80) {
+            used = 1;
+            return 0xFFFD;
+        }
+        code = code << 6 | (b(i) & 0x3F);
+    }
+    used = n;
+    return code;
+}
+
+// (ForkAde's fork) How many characters the first `bytes` of UTF-8 text are, and how many bytes its first `chars` are
+inline size_t CharCount(const char *s, size_t bytes) {
+    size_t count = 0;
+    for (size_t at = 0, used = 0; at < bytes; at += used, count++) {
+        NextChar(s + at, bytes - at, used);
+    }
+    return count;
+}
+inline size_t BytesOf(const char *s, size_t bytes, size_t chars) {
+    size_t at = 0;
+    for (size_t used = 0; at < bytes && chars > 0; at += used, chars--) {
+        NextChar(s + at, bytes - at, used);
+    }
+    return at;
+}
+
 constexpr int kCharWidth = 6, kLineHeight = 10; // a character's cell and a line, in font dots
 
 // UTF-8: the character at s (of the n bytes left), and how many bytes it takes (a broken one: '?', a byte)
@@ -182,6 +237,82 @@ struct Color {
     uint8_t r, g, b, a;
 };
 
+// (ForkAde's fork, online-hud-palette) The colours of what is drawn over an online match, the same in every port:
+// each side's player, the connection's readout, the streak numbers, VS, and the see-through band behind them
+struct Palette {
+    static constexpr Color kPlayer1{90, 160, 255, 255};  // blue
+    static constexpr Color kPlayer2{255, 90, 90, 255};   // red
+    static constexpr Color kReadout{255, 220, 70, 255};  // yellow
+    static constexpr Color kNumber{255, 255, 255, 255};
+    static constexpr Color kVersus{170, 175, 190, 255};
+    static constexpr Color kBand{20, 22, 30, 140};
+};
+
+// (ForkAde's fork) A small font for a readout: 3x5 dots in a 4x6 cell, the space, 0-9 and A-Z (a-z drawn as
+// capitals; anything else a blank cell), a row of 3 bits per byte (the left dot the highest bit), the top row first
+constexpr int kSmallCharWidth = 4, kSmallLineHeight = 6;
+inline constexpr uint8_t kSmallFont[37][5] = {
+    {0b000, 0b000, 0b000, 0b000, 0b000}, // ' '
+    {0b111, 0b101, 0b101, 0b101, 0b111}, // '0'
+    {0b010, 0b110, 0b010, 0b010, 0b111}, // '1'
+    {0b111, 0b001, 0b111, 0b100, 0b111}, // '2'
+    {0b111, 0b001, 0b011, 0b001, 0b111}, // '3'
+    {0b101, 0b101, 0b111, 0b001, 0b001}, // '4'
+    {0b111, 0b100, 0b111, 0b001, 0b111}, // '5'
+    {0b111, 0b100, 0b111, 0b101, 0b111}, // '6'
+    {0b111, 0b001, 0b010, 0b010, 0b010}, // '7'
+    {0b111, 0b101, 0b111, 0b101, 0b111}, // '8'
+    {0b111, 0b101, 0b111, 0b001, 0b111}, // '9'
+    {0b010, 0b101, 0b111, 0b101, 0b101}, // 'A'
+    {0b110, 0b101, 0b110, 0b101, 0b110}, // 'B'
+    {0b011, 0b100, 0b100, 0b100, 0b011}, // 'C'
+    {0b110, 0b101, 0b101, 0b101, 0b110}, // 'D'
+    {0b111, 0b100, 0b110, 0b100, 0b111}, // 'E'
+    {0b111, 0b100, 0b110, 0b100, 0b100}, // 'F'
+    {0b011, 0b100, 0b101, 0b101, 0b011}, // 'G'
+    {0b101, 0b101, 0b111, 0b101, 0b101}, // 'H'
+    {0b111, 0b010, 0b010, 0b010, 0b111}, // 'I'
+    {0b001, 0b001, 0b001, 0b101, 0b010}, // 'J'
+    {0b101, 0b101, 0b110, 0b101, 0b101}, // 'K'
+    {0b100, 0b100, 0b100, 0b100, 0b111}, // 'L'
+    {0b101, 0b111, 0b111, 0b101, 0b101}, // 'M'
+    {0b110, 0b101, 0b101, 0b101, 0b101}, // 'N'
+    {0b010, 0b101, 0b101, 0b101, 0b010}, // 'O'
+    {0b110, 0b101, 0b110, 0b100, 0b100}, // 'P'
+    {0b010, 0b101, 0b101, 0b110, 0b011}, // 'Q'
+    {0b110, 0b101, 0b110, 0b101, 0b101}, // 'R'
+    {0b011, 0b100, 0b010, 0b001, 0b110}, // 'S'
+    {0b111, 0b010, 0b010, 0b010, 0b010}, // 'T'
+    {0b101, 0b101, 0b101, 0b101, 0b111}, // 'U'
+    {0b101, 0b101, 0b101, 0b101, 0b010}, // 'V'
+    {0b101, 0b101, 0b111, 0b111, 0b101}, // 'W'
+    {0b101, 0b101, 0b010, 0b101, 0b101}, // 'X'
+    {0b101, 0b101, 0b010, 0b010, 0b010}, // 'Y'
+    {0b111, 0b001, 0b010, 0b100, 0b111}, // 'Z'
+};
+
+// The small font's glyph for c: its place in kSmallFont, or -1 (a blank cell)
+inline int SmallGlyph(char c) {
+    if (c >= 'a' && c <= 'z') {
+        c = static_cast<char>(c - 'a' + 'A');
+    }
+    if (c == ' ') {
+        return 0;
+    }
+    if (c >= '0' && c <= '9') {
+        return 1 + (c - '0');
+    }
+    if (c >= 'A' && c <= 'Z') {
+        return 11 + (c - 'A');
+    }
+    return -1;
+}
+
+// A text's width in the small font, in dots (a cell a byte: the small font has no letters over 127)
+inline float SmallTextWidth(const char *s) {
+    return static_cast<float>(strlen(s) * kSmallCharWidth);
+}
+
 struct Canvas {
     uint32_t *pixels;
     int width, height;
@@ -220,6 +351,22 @@ struct Canvas {
     }
     // Text in lines of at most maxWidth, broken at spaces (0: one line); the lines drawn
     int Text(float x, float y, float dot, float maxWidth, Color c, const char *s) const;
+    // (ForkAde's fork) One line in the small font, its cells' top left at x, y, a dot a pixel
+    void SmallText(float x, float y, Color c, const char *s) const {
+        for (; *s; s++, x += kSmallCharWidth) {
+            const int glyph = SmallGlyph(*s);
+            if (glyph < 0) {
+                continue;
+            }
+            for (int row = 0; row < 5; row++) {
+                for (int col = 0; col < 3; col++) {
+                    if (kSmallFont[glyph][row] & (4 >> col)) {
+                        Fill(x + col, y + row, 1, 1, c);
+                    }
+                }
+            }
+        }
+    }
 };
 
 // The bytes of the next line of s, of at most perLine characters, broken at a space; and where the line after begins

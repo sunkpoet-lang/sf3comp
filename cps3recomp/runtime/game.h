@@ -117,6 +117,9 @@ struct Game {
     // A round is being fought now (the port's match replays begin with one and end a while after the last). Not
     // given: no replays are kept.
     bool (*fighting)() = nullptr;
+    // (ForkAde, replay-viewer) The round's number in the match now (from 0), or -1 between matches: the replay
+    // viewer's round markers. Not given: a marker where each match begins.
+    int (*roundNumber)() = nullptr;
     // ... and what a replay's row says of the match, asked as it begins ("Ken vs Chun-Li"). Not given: its time alone.
     std::string (*matchLabel)() = nullptr;
     // With the board's timing (the port's arcade_timing feature) the game's own code runs in place of the readable

@@ -672,6 +672,8 @@ void RegisterTraining(Game &game) {
     d.healthFull = sfiii3::kFullLife;
     d.credits = sfiii3::kCredits;
     d.fighting = InMatch;
+    // (ForkAde, replay-viewer: each round marked on a replay's timeline)
+    TheGame().roundNumber = [] { return InMatch() ? static_cast<int>(Ram8(sfiii3::kRoundNumber)) : -1; };
     // (character select: 0 no player, 1 coming in, 2 choosing a character, 3-4 the super art, 5 chosen)
     d.joined = [](int p) { return Ram8(sfiii3::kSelectState[p]) >= 2; };
     // (chosen: the character and its super art, so that player 1 then chooses both of player 2's)

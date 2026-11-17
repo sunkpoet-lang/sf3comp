@@ -899,6 +899,9 @@ bool Port::Tick() {
         return true;
     }
     ReplayControls();
+    if (replay.playing && viewer.Active() && !replay.anyTaken()) {
+        return ViewerTick(); // (ForkAde, replay-viewer: the viewer runs the replay's frames)
+    }
     if (replay.playing && replay.skip > 0) {
         // (on the way to a place in a replay: unheard, some frames a tick)
         for (int n = 0; n < Replay::kSkipATick && replay.skip > 0; n++) {
@@ -1215,6 +1218,14 @@ void Port::ShownOver(std::vector<uint32_t> &pixels, std::vector<SDL_Rect> *panel
                 panels->push_back({static_cast<int>(x) - 6, static_cast<int>(y) - 4, static_cast<int>(width) + 13, 16});
             }
             y += 22;
+        }
+    }
+    // (ForkAde, replay-viewer) The replay's HUD at the bottom: the timeline, the transport, the aids
+    if (replay.playing && viewer.Active() && !replay.anyTaken() && viewer.HudShown(tick)) {
+        const recomp::text::Canvas canvas{pixels.data(), across, Video::kHeight};
+        viewer.DrawHud(canvas, replay.at, replay.play.frames, tick);
+        if (panels) {
+            panels->push_back(SDL_Rect{0, static_cast<int>(Video::kHeight) - viewer.HudHeight() - 10, across, viewer.HudHeight() + 10});
         }
     }
 }
@@ -2506,6 +2517,9 @@ bool ParseArgs(int argc, char **argv, port::Options &o) {
             o.net.listed = true;
         } else if (a == "--net-arcade") {
             o.net.arcade = true;
+        } else if (a == "--viewer-script") {
+            // (ForkAde, replay-viewer, the checks) TICK:COMMAND;...: the viewer's commands at those ticks of a replay
+            o.viewerScript = next();
         } else if (a == "--gekko-host") {
             // (ForkAde) its GekkoNet session (online.h): player 1, waiting on that UDP port (7845)
             o.gekko.mode = port::OnlineOptions::Mode::Host;

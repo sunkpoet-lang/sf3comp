@@ -91,6 +91,9 @@ struct Replay {
         Pads now{};
     };
     std::map<uint32_t, std::shared_future<Kept>> kept;
+    // (ForkAde, replay-viewer) the viewer's lasting states (its marks every 30 frames), packed the same way, by number
+    std::map<uint32_t, std::shared_future<Kept>> marks;
+    uint32_t markCount = 0;
 
     static bool Write(const std::string &path, const Data &data);
     // (headOnly: all but the state and the controls, for the list)

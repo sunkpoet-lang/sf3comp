@@ -12,6 +12,7 @@
 #include "bezel.h"
 #include "present.h"
 #include "replay.h"
+#include "../recomp-common/replay_viewer.h" // (ForkAde, replay-viewer)
 #include "soundtrack.h"
 #include "zoom.h"
 
@@ -99,6 +100,7 @@ struct Options {
     std::string netSay;         // --net-say [FRAME:]TEXT: (tests) the line said in the chat at FRAME of the match (120)
     uint64_t netSayAt = 120;
     std::string netTyping;      // --net-typing TEXT: (pictures) a line shown as being typed, all through the match
+    std::string viewerScript;   // (replay-viewer) --viewer-script TICK:COMMAND;...: the viewer worked by the checks
     // (ForkAde) --gekko-host, --gekko-join, --gekko-spectate, --gekko-spectators...: ForkAde's GekkoNet session (online.h);
     // --nick NAME: this player's name in it; --chat-log DIR: each match's chat kept there
     OnlineOptions gekko;
@@ -249,6 +251,19 @@ struct Port {
     bool ReplayRetry();
     void ReplayControls();
     std::string ReplayLine(int which) const;
+    // (ForkAde, replay-viewer) Watching a replay with ForkAde's viewer (recomp-common/replay_viewer.h): it runs the
+    // replay's frames through this port's board (replay.cpp, ViewerBoard) while no side is taken over; its commands from
+    // the controls (ReplayControls), the keys, the HUD (ViewerClick) and Game > Replay (ViewerCommand)
+    recomp::replay::Viewer viewer;
+    bool replayFought = false;      // (a round was being fought at the last frame run: the round markers)
+    int replayRound = -1;           // (... and the game's round number then, where it gives one)
+    uint64_t viewerScriptFrom = 0;  // (--viewer-script's ticks count from the replay's start)
+    uint64_t viewerBase = 0;        // (the port's frame at the replay's beginning: the port's frame follows the replay's)
+    bool ViewerTick();
+    void ViewerCommand(recomp::replay::Command command);
+    void ViewerAid(size_t which);
+    void ViewerAidsApply();
+    bool ViewerClick(float x, float y);
     // (ForkAde) The menu bar's Game > Replay: Record input... (the match being kept, kept; then this game from this
     // frame, until Stop, under that name), Play input... (ReplayPlay) and Stop (a replay stopped where it is, the
     // controls the players' from there; a recording kept). Not while a match is hosted or played online.

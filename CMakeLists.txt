@@ -147,7 +147,7 @@ set(PORT_SOURCES
     ${CR}/port/replay.cpp ${CR}/port/menu.cpp ${CR}/port/hud.cpp ${CR}/port/touch.cpp ${CR}/port/netplay.cpp ${CR}/port/online.cpp
     ${CR}/port/soundtrack.cpp ${CR}/port/decoders.cpp ${CR}/port/dreamcast.cpp ${CR}/port/native_gpu.cpp
     ${CR}/recomp-common/launcher/src/online.cpp ${CR}/recomp-common/launcher/src/run_program.cpp
-    ${CR}/recomp-common/menu.cpp ${CR}/recomp-common/menubar.cpp ${CR}/recomp-common/chat.cpp ${CR}/recomp-common/settings.cpp
+    ${CR}/recomp-common/menu.cpp ${CR}/recomp-common/menubar.cpp ${CR}/recomp-common/chat.cpp ${CR}/recomp-common/replay_viewer.cpp ${CR}/recomp-common/settings.cpp
     ${CR}/runtime/game.cpp ${CR}/runtime/system.cpp ${CR}/runtime/soundtrack.cpp ${CR}/runtime/spare.cpp ${CR}/fight/frames.cpp ${CR}/fight/training.cpp ${CR}/fight/session.cpp ${GAME_SOURCES})
 if (APPLE)
     enable_language(OBJCXX)
