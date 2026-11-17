@@ -27,6 +27,20 @@ if (ANDROID)
 endif ()
 
 find_package(ZLIB REQUIRED)
+# (ForkAde) GekkoNet (BSD-2-Clause): ForkAde's online session (port/online.h, from the CPS fork), its library only,
+# static, without asio (the port has its own UDP adapter): the release ForkAde pins for the CPS games
+include(FetchContent)
+set(NO_ASIO_BUILD ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(gekkonet
+    URL https://github.com/HeatXD/GekkoNet/archive/refs/tags/v20261024222910-9da2363.tar.gz
+    URL_HASH SHA256=a9001dec8698120fe45b314527d181c403ee92e3a30a03d765d3e792b8c74e1c
+    SOURCE_SUBDIR GekkoLib
+    DOWNLOAD_EXTRACT_TIMESTAMP ON
+    # (the state a spectator gets compressed and sent a few chunks at a time: cps3recomp/tools/patch_gekkonet.cmake)
+    PATCH_COMMAND ${CMAKE_COMMAND} -DSOURCE=<SOURCE_DIR> -P ${CMAKE_CURRENT_SOURCE_DIR}/cps3recomp/tools/patch_gekkonet.cmake)
+FetchContent_MakeAvailable(gekkonet)
+target_link_libraries(GekkoNet PRIVATE ZLIB::ZLIB)
 if (APPLE)
     find_package(SDL3 3.4.16 REQUIRED CONFIG)
 else ()
@@ -130,10 +144,10 @@ if (NOT GAME_SOURCES)
 endif ()
 set(PORT_SOURCES
     ${CR}/port/main.cpp ${CR}/port/frontend_sdl.cpp ${CR}/port/present.cpp ${CR}/port/bezel.cpp ${CR}/port/shading.cpp ${CR}/port/zoom.cpp
-    ${CR}/port/replay.cpp ${CR}/port/menu.cpp ${CR}/port/hud.cpp ${CR}/port/touch.cpp ${CR}/port/netplay.cpp
+    ${CR}/port/replay.cpp ${CR}/port/menu.cpp ${CR}/port/hud.cpp ${CR}/port/touch.cpp ${CR}/port/netplay.cpp ${CR}/port/online.cpp
     ${CR}/port/soundtrack.cpp ${CR}/port/decoders.cpp ${CR}/port/dreamcast.cpp ${CR}/port/native_gpu.cpp
     ${CR}/recomp-common/launcher/src/online.cpp ${CR}/recomp-common/launcher/src/run_program.cpp
-    ${CR}/recomp-common/menu.cpp ${CR}/recomp-common/menubar.cpp ${CR}/recomp-common/settings.cpp
+    ${CR}/recomp-common/menu.cpp ${CR}/recomp-common/menubar.cpp ${CR}/recomp-common/chat.cpp ${CR}/recomp-common/settings.cpp
     ${CR}/runtime/game.cpp ${CR}/runtime/system.cpp ${CR}/runtime/soundtrack.cpp ${CR}/runtime/spare.cpp ${CR}/fight/frames.cpp ${CR}/fight/training.cpp ${CR}/fight/session.cpp ${GAME_SOURCES})
 if (APPLE)
     enable_language(OBJCXX)
@@ -155,12 +169,12 @@ target_include_directories(${GAME} PRIVATE ${CR}/runtime ${CR}/port ${CR}/fight 
 if (SHARED_DIR)
     target_include_directories(${GAME} PRIVATE "${CMAKE_SOURCE_DIR}/games/${SHARED_DIR}")
 endif ()
-target_link_libraries(${GAME} PRIVATE cps3runtime cps3machine SDL3::SDL3)
+target_link_libraries(${GAME} PRIVATE cps3runtime cps3machine SDL3::SDL3 GekkoNet)
 if (APPLE)
     target_link_libraries(${GAME} PRIVATE "-framework AppKit")
 endif ()
 if (WIN32)
-    target_link_libraries(${GAME} PRIVATE ws2_32 iphlpapi)
+    target_link_libraries(${GAME} PRIVATE ws2_32 iphlpapi bcrypt) # (ForkAde: bcrypt, the online session's hashes)
 endif ()
 if (ANDROID)
     target_link_libraries(${GAME} PRIVATE log)

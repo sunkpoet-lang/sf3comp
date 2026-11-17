@@ -1118,8 +1118,32 @@ void Port::ShownOver(std::vector<uint32_t> &pixels, std::vector<SDL_Rect> *panel
     if (shotTicks > 0) {
         status(shotSaid.c_str(), said * 14);
     }
+    // (ForkAde's session: what it says while it is not playing (the wait, the connection, the other side gone), at the
+    // top; and while it plays, how many watch (the players') or WATCHING (a spectator's))
+    const MatchView session = gekkoMatch ? gekkoMatch->ReadMatch() : MatchView{};
+    const bool sessionPlaying = gekkoMatch && session.phase == MatchView::Phase::Playing;
+    if (gekkoMatch && !sessionPlaying && !session.message.empty()) {
+        std::string text = session.message;
+        for (char &c : text) {
+            c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+        }
+        status(text.c_str(), said++ * 14);
+    }
+    if (sessionPlaying) {
+        const recomp::text::Canvas canvas{pixels.data(), across, Video::kHeight};
+        const std::string label = session.spectating ? "WATCHING" : session.watching > 0 ? "WATCHING: " + std::to_string(session.watching) : "";
+        if (!label.empty()) {
+            const float width = recomp::text::TextWidth(label.c_str(), 1);
+            const float x = (across - width) / 2;
+            canvas.Fill(x - 3, 2, width + 6, 12, {20, 22, 30, 220});
+            canvas.Text(x, 4, 1, 0, {255, 210, 80, 255}, label.c_str());
+            if (panels) {
+                panels->push_back({static_cast<int>(x) - 3, 2, static_cast<int>(width) + 7, 12});
+            }
+        }
+    }
     // (online: each player's name under their side's life bar, and under it a win streak of two or more)
-    if (net && !connecting) {
+    if ((net && !connecting) || sessionPlaying) {
         const recomp::text::Canvas canvas{pixels.data(), across, Video::kHeight};
         auto under = [&](int side, float y, const std::string &text, recomp::text::Color colour) {
             const float width = recomp::text::TextWidth(text.c_str(), 1);
@@ -1132,7 +1156,7 @@ void Port::ShownOver(std::vector<uint32_t> &pixels, std::vector<SDL_Rect> *panel
         };
         for (int side = 0; side < 2; side++) {
             float y = 38.0f;
-            const std::string name = net->Name(side);
+            const std::string name = net ? net->Name(side) : session.names[side];
             if (!FeatureOn("online_hide_names") && !name.empty()) {
                 under(side, y, name, {255, 255, 255, 255});
                 y += 12;
@@ -1170,7 +1194,7 @@ void Port::ShownOver(std::vector<uint32_t> &pixels, std::vector<SDL_Rect> *panel
     }
     // (online: Esc's question, in the middle, over the game, which goes on; the port's own, not the readout, which the
     // game's sources set every frame. --net-arcade's wait: whether to stop hosting, the game stopped meanwhile)
-    if (net && leaving) {
+    if ((net || gekkoOnline) && leaving) {
         const recomp::text::Canvas canvas{pixels.data(), across, Video::kHeight};
         const bool hosting = connecting;
         const char *question = hostedFromMenu ? "Leave the match?" : hosting ? "Stop hosting and quit?" : "Leave the match?";
@@ -1634,10 +1658,34 @@ namespace {
     constexpr size_t kChatLines = 5;
 }
 
+namespace {
+    std::string ChatShownName(const ChatLink &link, int player) {
+        const std::string name = link.ChatName(player);
+        return name.empty() ? (player == 0 ? "Player 1" : "Player 2") : name;
+    }
+    // (the chat over ForkAde's session: the players'; a spectator's game has none, as in the CPS games)
+    ChatLink *SessionChat(const Port &port) {
+        ChatLink *link = port.gekkoChat;
+        return link && link->ChatReady() && !link->ChatSpectating() ? link : nullptr;
+    }
+} // namespace
+
 void Port::Say() {
     std::string line = typed;
     typing = false;
     typed.clear();
+    if (ChatLink *link = SessionChat(*this)) {
+        // (ForkAde's session: its chat link, the line logged)
+        std::string sent;
+        if (link->ChatSay(line, sent) == ChatLink::Said::Sent) {
+            const std::string name = ChatShownName(*link, link->ChatLocal());
+            chat.push_back({name + ": " + sent, tick + kChatTicks, true});
+            if (chatLog) {
+                chatLog->Sent(name, sent);
+            }
+        }
+        return;
+    }
     if (!net || connecting) {
         return;
     }
@@ -1649,13 +1697,98 @@ void Port::Say() {
 }
 
 void Port::HearChat() {
-    const std::string name = net->Name(1 - net->Local());
-    for (const std::string &line : net->TakeHeard()) {
+    if (ChatLink *link = SessionChat(*this)) {
+        // (ForkAde's session: the other player's lines, each with who said it)
+        for (const ChatLink::Heard &heard : link->ChatHeardLines()) {
+            if (heard.spectator) {
+                continue;
+            }
+            const std::string shown = heard.name.empty() ? ChatShownName(*link, 1 - link->ChatLocal()) : heard.name;
+            fprintf(stderr, "online: chat: %s: %s\n", shown.c_str(), heard.text.c_str());
+            chat.push_back({shown + ": " + heard.text, tick + kChatTicks, false});
+            if (chatLog) {
+                chatLog->Received(shown, heard.text);
+            }
+        }
+    }
+    const std::string name = net ? net->Name(1 - net->Local()) : std::string();
+    for (const std::string &line : net ? net->TakeHeard() : std::vector<std::string>()) {
         fprintf(stderr, "online: chat: %s: %s\n", name.empty() ? "(no name)" : name.c_str(), line.c_str());
         chat.push_back({(name.empty() ? "Them" : name) + ": " + line, tick + kChatTicks, false});
     }
     while (!chat.empty() && (chat.size() > kChatLines || chat.front().until <= tick)) {
         chat.pop_front();
+    }
+}
+
+// (ForkAde) A frame of its GekkoNet session (online.h) on the board: the players' controls as the session has them;
+// `again`, a frame run again in a rollback (not drawn; online.cpp keeps its sound out), not counted
+bool Port::RunOnlineFrame(std::span<const uint16_t> players, bool again) {
+    uint16_t all[Machine::kMaxPlayers] = {};
+    if (!recomp::rollback::BoardInputs(players, all)) {
+        return false;
+    }
+    machine->drawing = !again;
+    Step(all);
+    machine->drawing = true;
+    if (again) {
+        return true;
+    }
+    frame++;
+    if (hashFile) {
+        fprintf(hashFile, "%llu %08x\n", static_cast<unsigned long long>(frame), StateHash());
+    }
+    if (opt.shotEvery && frame % opt.shotEvery == 0) {
+        // (--shot-every: the picture as the window shows it, the names, the chat and all)
+        char shot[512];
+        snprintf(shot, sizeof(shot), "%s%06llu.png", opt.shotPrefix.c_str(), static_cast<unsigned long long>(frame));
+        std::vector<uint32_t> shown;
+        Shown(shown);
+        WritePng(shot, shown.data(), ShownWidth(), Video::kHeight);
+    }
+    return true;
+}
+
+// (ForkAde) The build both sides of its session must have: the commit (CMakeLists.txt, FORKADE_BUILD)
+std::string Port::BuildIdentity() const {
+#ifdef FORKADE_BUILD
+    return FORKADE_BUILD;
+#else
+    return RECOMP_VERSION;
+#endif
+}
+
+// (ForkAde) Every tick of its session's match: a new match's log (--chat-log), the lines that came, the tests' line
+// (--net-say, at its frame), and at the match's end the lines the other side never acknowledged, as not delivered
+void Port::ChatTick() {
+    ChatLink *link = SessionChat(*this);
+    if (link && link != chatMatch) {
+        chatMatch = link;
+        chatLog = std::make_unique<recomp::chat::Log>();
+        chatLog->Start(opt.chatLog, GAME_ID, BuildIdentity(), link->ChatHost());
+        chatLog->Names(ChatShownName(*link, link->ChatLocal()), ChatShownName(*link, 1 - link->ChatLocal()));
+        chatHintUntil = tick + kChatTicks;
+        fprintf(stderr, "online: chat: with %s, as %s\n", ChatShownName(*link, 1 - link->ChatLocal()).c_str(),
+                ChatShownName(*link, link->ChatLocal()).c_str());
+    }
+    HearChat();
+    if (link && !opt.netSay.empty() && frame >= opt.netSayAt) {
+        typed = opt.netSay;
+        opt.netSay.clear();
+        Say();
+    }
+    if (chatMatch && (!gekkoChat || gekkoChat->ChatOver())) {
+        if (gekkoChat) {
+            const std::string name = ChatShownName(*gekkoChat, gekkoChat->ChatLocal());
+            for (const std::string &line : gekkoChat->ChatUndelivered()) {
+                fprintf(stderr, "online: chat: not delivered: %s\n", line.c_str());
+                if (chatLog) {
+                    chatLog->Undelivered(name, line);
+                }
+            }
+        }
+        chatMatch = nullptr;
+        chatLog.reset();
     }
 }
 
@@ -1937,14 +2070,9 @@ void Port::RapidFire() {
     }
 }
 
-void Port::RunFrame() {
-    if (!opt.replayPlay.empty() && frame == 0 && !replay.playing) {
-        std::string why;
-        if (!ReplayPlay(opt.replayPlay, why)) {
-            fprintf(stderr, "replay: %s\n", why.c_str());
-        }
-        opt.replayPlay.clear();
-    }
+// The controls of this frame from an input movie (--movie) or made-up play (--auto), into `pad`; a window's are put
+// there by the window. (ForkAde: also what its online session takes as this side's controls, without running a frame)
+void Port::GatherInput() {
     if (!opt.moviePlay.empty()) {
         auto it = playMovie.changes.find(frame);
         if (it != playMovie.changes.end()) {
@@ -1977,6 +2105,17 @@ void Port::RunFrame() {
             std::copy(std::begin(autoPad), std::end(autoPad), pad);
         }
     }
+}
+
+void Port::RunFrame() {
+    if (!opt.replayPlay.empty() && frame == 0 && !replay.playing) {
+        std::string why;
+        if (!ReplayPlay(opt.replayPlay, why)) {
+            fprintf(stderr, "replay: %s\n", why.c_str());
+        }
+        opt.replayPlay.clear();
+    }
+    GatherInput();
     if (!opt.movieRecord.empty() && !net && memcmp(pad, lastRecorded, sizeof(pad)) != 0) { // (online: Netplay records both players)
         std::copy(std::begin(pad), std::end(pad), recMovie.changes[frame].begin());
         memcpy(lastRecorded, pad, sizeof(pad));
@@ -2367,6 +2506,40 @@ bool ParseArgs(int argc, char **argv, port::Options &o) {
             o.net.listed = true;
         } else if (a == "--net-arcade") {
             o.net.arcade = true;
+        } else if (a == "--gekko-host") {
+            // (ForkAde) its GekkoNet session (online.h): player 1, waiting on that UDP port (7845)
+            o.gekko.mode = port::OnlineOptions::Mode::Host;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                o.gekko.port = static_cast<uint16_t>(atoi(next()));
+            }
+        } else if (a == "--gekko-join" || a == "--gekko-watch") {
+            const std::string v = next();
+            const size_t colon = v.rfind(':');
+            o.gekko.mode = a == "--gekko-join" ? port::OnlineOptions::Mode::Join : port::OnlineOptions::Mode::Watch;
+            o.gekko.host = v.substr(0, colon);
+            if (colon != std::string::npos) {
+                o.gekko.port = static_cast<uint16_t>(atoi(v.c_str() + colon + 1));
+            }
+        } else if (a == "--gekko-spectate") {
+            o.gekko.spectate = true; // (the launcher's Watch: its --gekko-join, as a spectator)
+        } else if (a == "--gekko-spectators") {
+            o.gekko.spectators = atoi(next());
+        } else if (a == "--gekko-spectator-delay") {
+            o.gekko.spectatorDelay = atoi(next());
+        } else if (a == "--gekko-delay") {
+            o.gekko.delay = atoi(next());
+        } else if (a == "--gekko-stress") {
+            o.gekko.mode = port::OnlineOptions::Mode::Stress;
+        } else if (a == "--gekko-checkpoint-log") {
+            o.gekko.checkpointLog = next(); // (each saved frame of the session and its board's hash: the checks')
+        } else if (a == "--gekko-flow-log") {
+            o.gekko.flowLog = next();
+        } else if (a == "--chat-loss") {
+            o.gekko.chatLoss = atoi(next());
+        } else if (a == "--nick") {
+            o.nick = next();
+        } else if (a == "--chat-log") {
+            o.chatLog = next();
         } else if (a == "--net-name") {
             o.net.name = next();
         } else if (a == "--net-say") {
@@ -2467,6 +2640,12 @@ bool ParseArgs(int argc, char **argv, port::Options &o) {
             return false;
         }
     }
+    // (ForkAde) The launcher's Watch: a --gekko-join that watches; this player's name in the session: --nick, else
+    // --net-name
+    if (o.gekko.spectate && o.gekko.mode == port::OnlineOptions::Mode::Join) {
+        o.gekko.mode = port::OnlineOptions::Mode::Watch;
+    }
+    o.gekko.name = o.nick.empty() ? o.net.name : o.nick;
     return true;
 }
 
@@ -2584,7 +2763,51 @@ int main(int argc, char **argv) {
     }
     int result = 0;
     const auto begin = std::chrono::steady_clock::now();
-    if (p.opt.headless) {
+    if (p.opt.headless && p.opt.gekko.mode != port::OnlineOptions::Mode::Off) {
+        // (ForkAde) Its GekkoNet session with no window, for the checks: this side's controls from the movie or the
+        // made-up play (player 1's; its player 2's too for the stress test), a tick a frame's time but for the stress
+        // test; a spectator goes by the match's own frames
+        port::Online online;
+        std::string error;
+        if (!online.Start(p, p.opt.gekko, error)) {
+            fprintf(stderr, "%s: %s\n", GAME_NAME, error.c_str());
+            return 1;
+        }
+        const bool stress = p.opt.gekko.mode == port::OnlineOptions::Mode::Stress;
+        const bool watching = online.Spectating();
+        uint64_t shown = 0, shownEpoch = online.Epoch();
+        const uint64_t frames = p.opt.frames ? p.opt.frames : 600;
+        while ((watching ? p.frame : shown) < frames && online.GetStatus() != port::Online::Status::Ended) {
+            if (!watching) {
+                p.frame = shown;
+            }
+            p.GatherInput();
+            const uint16_t local[4] = {p.pad[0], stress ? p.pad[1] : uint16_t{0}, 0, 0};
+            const bool wasArcade = online.ArcadeWaiting();
+            const int seen = online.Tick(local);
+            if (wasArcade && !online.ArcadeWaiting()) {
+                shown = 0;
+            }
+            if (shownEpoch != online.Epoch()) {
+                shown = 0;
+                shownEpoch = online.Epoch();
+            }
+            p.machine->audio.clear();
+            shown += static_cast<uint64_t>(seen);
+            p.tick++;
+            if (!stress) {
+                std::this_thread::sleep_for(std::chrono::microseconds(online.FramesAhead() > 1.0f ? 17000 : 16700));
+            }
+        }
+        if (!watching) {
+            p.frame = shown;
+        }
+        fprintf(stderr, "online: %llu frames; state hash %08x\n", static_cast<unsigned long long>(watching ? p.frame : shown), p.StateHash());
+        if (!online.Message().empty()) {
+            fprintf(stderr, "online: %s\n", online.Message().c_str());
+        }
+        result = online.Failed() ? 3 : 0;
+    } else if (p.opt.headless) {
         std::vector<int16_t> sound;
         std::vector<float> music, musicMade; // (--soundtrack-dump)
         int musicRate = 0;

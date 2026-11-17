@@ -333,7 +333,7 @@ namespace {
         recomp::BarOptions options;
         options.slotUsed = [&](int slot) { return std::filesystem::exists(TextPath(port.StatePath(slot)), error); };
         port.menu.AddBarEntries(menus, true, options);
-        const bool online = port.net != nullptr;
+        const bool online = port.net != nullptr || port.gekkoOnline;
         std::vector<recomp::BarEntry> &game = menus[0].entries;
         auto slot = std::find_if(game.begin(), game.end(), [](const recomp::BarEntry &e) { return e.label == "Slot"; });
         const size_t after = slot == game.end() ? 0 : static_cast<size_t>(slot - game.begin()) + 1;
@@ -736,6 +736,11 @@ int RunWindowed(Port &port) {
     // while it was held: then it was the zoom's)
     bool stickWaiting = false;
     auto toggleMenu = [&]() {
+        if (port.gekkoOnline) {
+            // (ForkAde's session: no menu, the match goes on; Esc asks whether to leave it, as with Tommy's netplay)
+            port.leaving = !port.leaving;
+            return;
+        }
         if (port.net) {
             // (online: no menu, the game goes on for both players; Esc gives up a wait, and in a match asks whether to
             // leave it: Port::leaving)
@@ -765,8 +770,13 @@ int RunWindowed(Port &port) {
     // it, not the game's until every key is let go (the Enter that sent it is not the game's Start).
     uint64_t openedByT = 0; // (when T opened it: its own letter, if the system sends it as text too, is not the line's)
     bool keysAfterChat = false;
+    // (a match to chat in: Tommy's netplay's once found, or ForkAde's session's, its players only)
+    auto chatting = [&]() {
+        return (port.net && !port.connecting) ||
+               (port.gekkoChat && port.gekkoChat->ChatReady() && !port.gekkoChat->ChatSpectating());
+    };
     auto chatOpen = [&](bool open) {
-        if (open == port.typing || (open && (!port.net || port.connecting || port.leaving))) {
+        if (open == port.typing || (open && (!chatting() || port.leaving))) {
             return;
         }
         port.typing = open;
@@ -783,7 +793,7 @@ int RunWindowed(Port &port) {
         }
     };
     auto quickState = [&](bool save) {
-        if (port.net) {
+        if (port.net || port.gekkoOnline) {
             return; // (online: no save states)
         }
         std::string error;
@@ -909,6 +919,21 @@ int RunWindowed(Port &port) {
     int zoomRow = port.zoom.Choice();
     const double kFrameNs = 1e9 / Machine::kFramesPerSecond;
     uint64_t nextFrame = SDL_GetTicksNS();
+    // (ForkAde) Its GekkoNet session (online.h): it runs the frames, with this side's controls as its player's
+    Online session;
+    const bool sessionOn = port.opt.gekko.mode != OnlineOptions::Mode::Off;
+    if (sessionOn) {
+        std::string error;
+        if (!session.Start(port, port.opt.gekko, error)) {
+            fprintf(stderr, "online: %s\n", error.c_str());
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title, ("Online: " + error).c_str(), window);
+            return 1;
+        }
+        const OnlineOptions::Mode mode = port.opt.gekko.mode;
+        const char *who = mode == OnlineOptions::Mode::Host ? "player 1" : mode == OnlineOptions::Mode::Join ? "player 2"
+                        : mode == OnlineOptions::Mode::Watch ? "watching" : "stress test";
+        SDL_SetWindowTitle(window, (std::string(title) + " - online, " + who).c_str());
+    }
     bool running = true;
     while (running && !port.quit && (port.opt.frames == 0 || port.frame < port.opt.frames)) {
         SDL_Event ev;
@@ -943,7 +968,7 @@ int RunWindowed(Port &port) {
                 }
             }
         }
-        if (port.typing && (!port.net || port.connecting)) {
+        if (port.typing && !chatting()) {
             chatOpen(false); // (the match over, or waited for again)
         }
         replayDialogs();
@@ -951,7 +976,7 @@ int RunWindowed(Port &port) {
         if (bar.IsOpen() != barWasOpen) {
             // (ForkAde: the game stands still while the bar's menu is open, and goes on as it was after; online it goes on)
             barWasOpen = bar.IsOpen();
-            if (!port.net) {
+            if (!port.net && !port.gekkoOnline) {
                 if (barWasOpen) {
                     barHeldPause = port.paused;
                     port.paused = true;
@@ -1075,7 +1100,7 @@ int RunWindowed(Port &port) {
                     toggleMenu();
                 } else if (KeyBound(ev.key.scancode)) {
                     // (a key the player has given to the game does only that)
-                } else if (port.net && ev.key.scancode == SDL_SCANCODE_T && !ev.key.repeat) {
+                } else if (chatting() && ev.key.scancode == SDL_SCANCODE_T && !ev.key.repeat) {
                     chatOpen(true);
                     openedByT = port.typing ? SDL_GetTicks() : 0;
                 } else if (multi && !port.menu.IsOpen() && ev.key.scancode == SDL_SCANCODE_N && !ev.key.repeat) {
@@ -1127,7 +1152,7 @@ int RunWindowed(Port &port) {
                 } else if (port.menu.IsOpen()) {
                     break;
                 } else if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) {
-                    if (port.net) {
+                    if (port.net || port.gekkoOnline) {
                         chatOpen(!port.typing);
                     } else {
                         port.Key('p');
@@ -1166,9 +1191,9 @@ int RunWindowed(Port &port) {
             toggleMenu();
         }
         port.PumpHost(); // (a match hosted from the menu, listened for, the menu open or not)
-        touch.Chat(port.net != nullptr); // (online, from the start or a match hosted from the menu)
+        touch.Chat(port.net != nullptr || port.gekkoOnline); // (online, from the start or a match hosted from the menu)
         if (touch.TakeZoomPress()) {
-            if (port.net) {
+            if (port.net || port.gekkoOnline) {
                 chatOpen(!port.typing);
             } else {
                 port.zoom.Both();
@@ -1303,7 +1328,13 @@ int RunWindowed(Port &port) {
             } else if (port.leaving) {
                 // (online, "Leave the match?": Confirm leaves it, Back stays; this side's player stands still meanwhile)
                 if (menuPressed & recomp::kMenuConfirm) {
-                    port.LeaveOnline();
+                    if (port.gekkoOnline) {
+                        session.Stop(); // (ForkAde's session: leaving the match ends the game, as the launcher started it)
+                        port.ChatTick();
+                        port.quit = true;
+                    } else {
+                        port.LeaveOnline();
+                    }
                 } else if (menuPressed & recomp::kMenuBack) {
                     port.leaving = false;
                 }
@@ -1482,8 +1513,19 @@ int RunWindowed(Port &port) {
 
         // (the game's time to the screen's: under 1 slowed, over 1 faster than the board)
         const auto rate = port.menu.GameRate();
-        const double pace = port.paused ? 1.0 : static_cast<double>(rate.frames) / rate.ticks;
-        const bool ran = port.Tick();
+        const double pace = port.paused || sessionOn ? 1.0 : static_cast<double>(rate.frames) / rate.ticks;
+        bool ran;
+        if (sessionOn) {
+            // (this side's player: the keyboard's players' keys and the gamepads together)
+            const uint16_t local[4] = {static_cast<uint16_t>(port.pad[0] | port.pad[1]), 0, 0, 0};
+            ran = session.Tick(local) > 0;
+            port.tick++;
+            if (session.GetStatus() == Online::Status::Ended && port.leaving) {
+                port.quit = true;
+            }
+        } else {
+            ran = port.Tick();
+        }
 
         drainSink(); // (the checks' sink: what a device would have taken by now)
         if (audio && silent != (port.menu.muted || audioLog)) {

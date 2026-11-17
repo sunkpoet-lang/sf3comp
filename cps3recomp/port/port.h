@@ -7,6 +7,8 @@
 #include "system.h"
 #include "menu.h"
 #include "netplay.h"
+#include "online.h" // (ForkAde: its GekkoNet session, from the CPS fork)
+#include "../recomp-common/chat.h"
 #include "bezel.h"
 #include "present.h"
 #include "replay.h"
@@ -97,6 +99,10 @@ struct Options {
     std::string netSay;         // --net-say [FRAME:]TEXT: (tests) the line said in the chat at FRAME of the match (120)
     uint64_t netSayAt = 120;
     std::string netTyping;      // --net-typing TEXT: (pictures) a line shown as being typed, all through the match
+    // (ForkAde) --gekko-host, --gekko-join, --gekko-spectate, --gekko-spectators...: ForkAde's GekkoNet session (online.h);
+    // --nick NAME: this player's name in it; --chat-log DIR: each match's chat kept there
+    OnlineOptions gekko;
+    std::string nick, chatLog;
 };
 
 // Recorded input: what the players hold, at the frames where it changes
@@ -346,6 +352,21 @@ struct Port {
     bool RunsAhead() const; // (whether RunAhead runs frames ahead now)
     void Finish();
     uint32_t StateHash() const;
+    uint32_t StateHash(bool) const { return StateHash(); } // (ForkAde's session: the CPS port's form)
+    // (ForkAde) The GekkoNet session (online.h) while it plays: the match the window shows, the chat over it, and a
+    // frame of the session's run on the board (`again`: a frame run again in a rollback, unseen and unheard).
+    // `gekkoOnline` turns off what Tommy's netplay turns off; `gekkoArcadeWaiting`: the host plays alone while it waits
+    MatchLink *gekkoMatch = nullptr; // non-owning; Online unregisters before it dies
+    ChatLink *gekkoChat = nullptr;
+    bool gekkoOnline = false, gekkoArcadeWaiting = false;
+    MatchLink *Match() const { return gekkoMatch; }
+    bool RunOnlineFrame(std::span<const uint16_t> players, bool again);
+    void GatherInput(); // (the controls of a frame from --movie or --auto, into pad)
+    std::string BuildIdentity() const;
+    // The chat over the GekkoNet session, every tick of its match: the lines heard, the log (--chat-log), the end
+    void ChatTick();
+    ChatLink *chatMatch = nullptr;
+    std::unique_ptr<recomp::chat::Log> chatLog;
     bool SaveState(const std::string &path, std::string &error);
     bool LoadState(const std::string &path, std::string &error);
 };
