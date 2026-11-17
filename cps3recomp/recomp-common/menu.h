@@ -48,6 +48,7 @@ struct MenuRow {
     int id;                  // Action: handed back when chosen
     std::string title;       // Action; Page: the page's name
     std::string description; // Action
+    std::string bar;         // (ForkAde) the menu bar's menu it is in (menubar.h's AddMenuEntries; "": by its kind)
     MenuRow(Kind kind, int id = 0, std::string title = {}, std::string description = {})
         : kind(kind), id(id), title(std::move(title)), description(std::move(description)) {}
 };
@@ -109,6 +110,9 @@ struct MenuConfig {
     // The Mute row: whether the game's sound is off now, and switching it off and on
     std::function<bool()> muted;
     std::function<void(bool muted)> setMuted;
+    // (ForkAde) With these too, the menu bar's Sound has Louder and Quieter (menubar.h; volume.h's steps)
+    std::function<int()> volume;
+    std::function<void(int percent)> setVolume;
     // What the menu's buttons are called on this system, for the hint line: kMenuConfirm ("a button",
     // "A, B or C") and what closes the menu ("Esc", "Esc or Select")
     std::string confirmName = "a button";

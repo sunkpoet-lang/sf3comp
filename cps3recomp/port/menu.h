@@ -11,7 +11,7 @@
 // the buttons, the speeds, and the games' features and commands handed over.
 #pragma once
 
-#include "../recomp-common/menu.h"
+#include "../recomp-common/menubar.h" // (ForkAde: and the menu bar, which includes menu.h)
 
 #include <cstdint>
 #include <functional>
@@ -42,6 +42,9 @@ public:
     // gamepad buttons that are the same whatever the game's are set to: the arrows, the d-pad and the left
     // stick; Space, Enter and A choose; Backspace and B go back.
     Action Press(unsigned buttons);
+    // (ForkAde) The menu bar's entries for these rows (menubar.h), and what one chosen there does
+    void AddBarEntries(std::vector<recomp::BarMenu> &menus, bool withStates, const recomp::BarOptions &options = {});
+    Action Choose(int id);
     // The "Sound" row: the frontend plays nothing while this is set (--mute starts with it set)
     bool muted = false;
     // The Replays page's rows after the game's commands' (the port's match replays): a title and what it says for
@@ -102,6 +105,9 @@ public:
 
 private:
     static void Speeds(recomp::MenuConfig &config);
+    recomp::MenuConfig Config(bool withStates);
+    Action Did(const recomp::Menu::Chosen &chosen);
+    recomp::MenuConfig m_config; // (the rows as last made: what the bar's entries choose from)
 
     recomp::Menu m_menu;
     size_t m_command = 0, m_replay = 0;

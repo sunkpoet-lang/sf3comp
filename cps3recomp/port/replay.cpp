@@ -326,6 +326,22 @@ void Port::ReplayEnd(bool keep) {
     }
     r.recording = false;
     Replay::Data &made = r.made;
+    if (!r.manualPath.empty()) {
+        // (ForkAde: Record input...: every frame from where it was chosen, under the player's name for it)
+        const std::string path = std::move(r.manualPath);
+        r.manualPath.clear();
+        if (!keep || made.frames < 60) {
+            menu.Note("The recording was under a second: not kept.");
+        } else if (Replay::Write(path, made)) {
+            fprintf(stderr, "replay: kept %s (%s, %zu changes of the controls)\n", path.c_str(), Replay::Length(made.frames).c_str(), made.changes.size());
+            menu.Note("Replay kept: " + PathText(TextPath(path).filename()));
+        } else {
+            fprintf(stderr, "replay: cannot write %s\n", path.c_str());
+            menu.Note("The replay could not be written: " + path);
+        }
+        made = {};
+        return;
+    }
     if (!made.online) {
         // (the match, and a moment after its last round)
         const uint32_t frames = std::min(made.frames, r.lastFought + Replay::kTail);
@@ -425,7 +441,7 @@ void Port::ReplayBefore(uint16_t *pressed) {
     const Game &game = TheGame();
     const bool on = FeatureOn("match_replays") && game.fighting && !(game.inTraining && game.inTraining()) && !FastForward();
     const bool fighting = on && game.fighting();
-    if (!r.recording && fighting && !r.wasFighting) {
+    if (!r.recording && fighting && !r.wasFighting && r.manualPath.empty()) {
         ReplayBegin(false);
     }
     r.wasFighting = fighting;
@@ -476,9 +492,50 @@ void Port::ReplayAfter() {
     }
     const Game &game = TheGame();
     const bool on = FeatureOn("match_replays") && !(game.inTraining && game.inTraining());
-    if (!on || r.made.frames - r.lastFought > Replay::kQuiet || r.made.frames >= Replay::kLongest) {
+    if (r.manualPath.empty() ? (!on || r.made.frames - r.lastFought > Replay::kQuiet || r.made.frames >= Replay::kLongest)
+                             : r.made.frames >= Replay::kLongest) {
         ReplayEnd();
     }
+}
+
+// (ForkAde) The menu bar's Game > Replay
+bool Port::RecordInputTo(const std::string &path, std::string &error) {
+    if (net || waitingHost) { error = "Not while a match is hosted or played online."; return false; }
+    if (replay.playing) { error = "Not while a replay is played."; return false; }
+    if (path.empty()) { error = "No file was chosen."; return false; }
+    ReplayEnd(); // (the match being kept, kept as it would be)
+    ReplayBegin(false);
+    replay.manualPath = path;
+    replay.made.fought = 0;
+    fprintf(stderr, "replay: recording input to %s\n", path.c_str());
+    return true;
+}
+
+bool Port::PlayInput(const std::string &path, std::string &error) {
+    if (path.empty()) { error = "No file was chosen."; return false; }
+    if (!replay.manualPath.empty()) ReplayEnd(); // (a recording by hand, kept first)
+    return ReplayPlay(path, error);
+}
+
+void Port::StopReplayOrRecord() {
+    if (replay.playing) {
+        // (the game as the replay left it: the players' from here)
+        fprintf(stderr, "replay: stopped at frame %u\n", replay.at);
+        ReplayStop(false);
+        return;
+    }
+    if (!replay.manualPath.empty()) {
+        ReplayEnd();
+    }
+}
+
+std::string Port::ProposedReplayPath() const {
+    char stamp[32] = "";
+    const std::time_t now = std::time(nullptr);
+    if (const std::tm *local = std::localtime(&now)) {
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", local);
+    }
+    return ReplayFolder() + stamp + "-manual.s3r";
 }
 
 bool Port::ReplayPlay(const std::string &path, std::string &error) {
@@ -491,7 +548,12 @@ bool Port::ReplayPlay(const std::string &path, std::string &error) {
     if (!Replay::Read(path, data, false, error)) {
         return false;
     }
-    if (data.game != GAME_ID || data.version != RECOMP_VERSION || data.stateVersion != StateVersion()) {
+    if (data.game != GAME_ID) {
+        // (ForkAde: another game's replay says so, rather than a version)
+        error = "This replay is of another game (" + data.game + "), not of " GAME_NAME ".";
+        return false;
+    }
+    if (data.version != RECOMP_VERSION || data.stateVersion != StateVersion()) {
         error = "Kept by version " + data.version + ": only the version that kept a match can play it again.";
         return false;
     }

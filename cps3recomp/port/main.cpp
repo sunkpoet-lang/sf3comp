@@ -2029,6 +2029,16 @@ void Port::RunFrame() {
     if (!net && AtFrame(opt.stateLoad, frame, path) && !LoadState(path, error)) {
         fprintf(stderr, "%s\n", error.c_str());
     }
+    // (ForkAde, for checks: what Game > Replay does, at a frame)
+    if (AtFrame(opt.recordInputAt, frame, path) && !RecordInputTo(path, error)) {
+        fprintf(stderr, "replay: %s\n", error.c_str());
+    }
+    if (AtFrame(opt.playInputAt, frame, path) && !PlayInput(path, error)) {
+        fprintf(stderr, "replay: %s\n", error.c_str());
+    }
+    if (opt.stopReplayAt && frame == opt.stopReplayAt) {
+        StopReplayOrRecord();
+    }
     if (net && connecting) {
         Step(pressed); // (--net-arcade: the host playing while it waits)
         cameIn = cameIn || (pressed[0] & kStart);
@@ -2400,6 +2410,12 @@ bool ParseArgs(int argc, char **argv, port::Options &o) {
             o.stateSave = next();
         } else if (a == "--state-load") {
             o.stateLoad = next();
+        } else if (a == "--record-input-at") {
+            o.recordInputAt = next();
+        } else if (a == "--play-input-at") {
+            o.playInputAt = next();
+        } else if (a == "--stop-replay-at") {
+            o.stopReplayAt = strtoull(next(), nullptr, 10);
         } else if (a == "--stats") {
             o.stats = true;
         } else if (a == "--list-features") {

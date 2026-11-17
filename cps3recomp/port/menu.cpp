@@ -29,10 +29,7 @@ namespace {
     constexpr int kFull = 6;
 } // namespace
 
-void Menu::Open(bool withStates) {
-    if (onOpen) {
-        onOpen();
-    }
+recomp::MenuConfig Menu::Config(bool withStates) {
     const cps3recomp::Game &game = cps3recomp::TheGame();
     recomp::MenuConfig config;
     // Online, Display and Game first (issue #196), then the game's pages that belong at the head; then three groups
@@ -120,7 +117,15 @@ void Menu::Open(bool withStates) {
     config.setMuted = [this](bool to) { muted = to; };
     config.confirmName = "Enter or A";
     config.closeName = "Esc";
-    m_menu.Configure(std::move(config));
+    return config;
+}
+
+void Menu::Open(bool withStates) {
+    if (onOpen) {
+        onOpen();
+    }
+    m_config = Config(withStates);
+    m_menu.Configure(m_config);
     m_menu.Open();
     if (!m_waiting.empty()) {
         m_menu.Note(m_waiting);
@@ -177,8 +182,39 @@ Menu::Action Menu::Buttons(uint16_t pressed) {
     return Press(buttons);
 }
 
+// (ForkAde) The menu bar's entries made from the same rows, features and commands as this menu's (menubar.h), the
+// Display page's choices in Video, as the CPS ports have them
+void Menu::AddBarEntries(std::vector<recomp::BarMenu> &menus, bool withStates, const recomp::BarOptions &options) {
+    if (onOpen) {
+        onOpen();
+    }
+    m_config = Config(withStates);
+    m_menu.Configure(m_config);
+    recomp::AddMenuEntries(menus, m_config, m_menu, options);
+    auto video = std::find_if(menus.begin(), menus.end(), [](const recomp::BarMenu &m) { return m.title == "Video"; });
+    if (video == menus.end()) {
+        return;
+    }
+    for (recomp::BarMenu &menu : menus) {
+        auto display = std::find_if(menu.entries.begin(), menu.entries.end(), [](const recomp::BarEntry &e) { return e.label == "Display"; });
+        if (&menu != &*video && display != menu.entries.end()) {
+            std::vector<recomp::BarEntry> moved = display->children;
+            menu.entries.erase(display);
+            video->entries.insert(video->entries.begin(), moved.begin(), moved.end());
+            break;
+        }
+    }
+}
+
+Menu::Action Menu::Choose(int id) {
+    return Did(recomp::ChooseMenuEntry(id, m_config, m_menu));
+}
+
 Menu::Action Menu::Press(unsigned buttons) {
-    const recomp::Menu::Chosen chosen = m_menu.Buttons(buttons);
+    return Did(m_menu.Buttons(buttons));
+}
+
+Menu::Action Menu::Did(const recomp::Menu::Chosen &chosen) {
     switch (chosen.kind) {
     case recomp::Menu::Chosen::Save: return Action::Save;
     case recomp::Menu::Chosen::Load: return Action::Load;

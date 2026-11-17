@@ -56,6 +56,9 @@ struct Replay {
 
     // --- a match being kept ---
     bool recording = false, wasFighting = false;
+    // (ForkAde: Game > Replay > Record input...: kept from the frame it was chosen at to Stop, whatever is fought,
+    // under the name the player gave; "": the match replays as they always were)
+    std::string manualPath;
     Data made;
     uint32_t lastFought = 0;
     Pads lastHeld{};

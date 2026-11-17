@@ -61,6 +61,9 @@ struct Options {
     std::string cpu;           // native | blocks | interp | check (default: native when there is translated code)
     std::string sound;         // driver | z80 | check (default: driver when the game's sound program is a known one)
     std::string stateSave, stateLoad; // FRAME:path
+    // (ForkAde, for checks) Game > Replay's Record input... and Play input... (FRAME:path) and Stop (FRAME) at a frame
+    std::string recordInputAt, playInputAt;
+    uint64_t stopReplayAt = 0;
     uint64_t frames = 0;       // stop after this many (0: run on)
     uint64_t shotEvery = 0;
     uint64_t autoSeed = 0;     // --auto: made-up input from this seed
@@ -240,6 +243,13 @@ struct Port {
     bool ReplayRetry();
     void ReplayControls();
     std::string ReplayLine(int which) const;
+    // (ForkAde) The menu bar's Game > Replay: Record input... (the match being kept, kept; then this game from this
+    // frame, until Stop, under that name), Play input... (ReplayPlay) and Stop (a replay stopped where it is, the
+    // controls the players' from there; a recording kept). Not while a match is hosted or played online.
+    bool RecordInputTo(const std::string &path, std::string &error);
+    bool PlayInput(const std::string &path, std::string &error);
+    void StopReplayOrRecord();
+    std::string ProposedReplayPath() const;
     std::vector<Replay::Entry> replayList; // (as the menu last listed them)
     // The input lag readout (the port's input_lag feature), in three parts. The game's: how many frames after a press
     // the picture first shows it, found in a fight by running the next frames both ways from one state (nothing held,

@@ -21,6 +21,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 
 using namespace cps3recomp;
 
@@ -293,6 +294,127 @@ namespace {
         return fresh;
     }
 
+    // (ForkAde) The menu bar along the top of the window, as the CPS games have it (recomp-common's menubar.h): the
+    // in-game menu's rows, features and commands in its Game, Video, Input, Features and Help menus (Menu::
+    // AddBarEntries), with the window's own entries: quick save and load, the screenshot, Game > Replay, full screen
+    enum { kBarQuickSave = 1, kBarQuickLoad, kBarFullscreen, kBarAbout, kBarKey, kBarScreenshot, kBarRecordInput, kBarPlayInput, kBarStopReplay };
+    const char *const kBarKeys[][2] = {
+        {"In-game menu", "Esc, F1"}, {"Menu bar", "F10, Alt"}, {"Quick save", "F5"}, {"Quick load", "F9"}, {"Slot before, next", "F6, F7"},
+        {"Screenshot", "F12"}, {"Fullscreen", "F11"}, {"Test switch", "F2"}, {"Pause", "P"}, {"One frame", "O"},
+        {"Slower, faster", "-, ="}, {"Restart", "Backspace"},
+    };
+    recomp::BarEntry BarItem(const char *label, int id, const char *shortcut = "", bool enabled = true) {
+        recomp::BarEntry e;
+        e.label = label;
+        e.id = id;
+        e.shortcut = shortcut;
+        e.enabled = enabled;
+        return e;
+    }
+    // (SDL's file dialogs answer on their own thread: the file chosen waits here for the window's loop)
+    struct ReplayDialog {
+        std::mutex lock;
+        int kind = 0;
+        std::string path;
+        bool answered = false;
+    };
+    ReplayDialog replayDialog;
+    void SDLCALL ReplayDialogDone(void *userdata, const char *const *files, int) {
+        std::lock_guard<std::mutex> hold(replayDialog.lock);
+        replayDialog.kind = static_cast<int>(reinterpret_cast<intptr_t>(userdata));
+        replayDialog.path = files && files[0] ? files[0] : "";
+        replayDialog.answered = true;
+    }
+    const SDL_DialogFileFilter kReplayFilter[] = {{"Replays (.s3r)", "s3r"}};
+
+    void BarMenus(Port &port, recomp::MenuBar &bar, bool fullscreen, std::vector<recomp::BarMenu> *copy = nullptr) {
+        std::vector<recomp::BarMenu> menus = {{"Game", {}}, {"Video", {}}, {"Audio", {}}, {"Input", {}}, {"Features", {}}, {"Help", {}}};
+        std::error_code error;
+        recomp::BarOptions options;
+        options.slotUsed = [&](int slot) { return std::filesystem::exists(TextPath(port.StatePath(slot)), error); };
+        port.menu.AddBarEntries(menus, true, options);
+        const bool online = port.net != nullptr;
+        std::vector<recomp::BarEntry> &game = menus[0].entries;
+        auto slot = std::find_if(game.begin(), game.end(), [](const recomp::BarEntry &e) { return e.label == "Slot"; });
+        const size_t after = slot == game.end() ? 0 : static_cast<size_t>(slot - game.begin()) + 1;
+        game.insert(game.begin() + static_cast<std::ptrdiff_t>(after),
+                    {recomp::BarEntry::Line(), BarItem("Quick save", kBarQuickSave, "F5"),
+                     BarItem("Quick load", kBarQuickLoad, "F9", options.slotUsed(port.menu.Slot())), BarItem("Screenshot", kBarScreenshot, "F12")});
+        // Game > Replay: Record input..., Play input..., Stop (dim online, as the save states are)
+        {
+            const bool recording = !port.replay.manualPath.empty();
+            recomp::BarEntry replay = BarItem("Replay", 0);
+            if (port.replay.playing) replay.children.push_back(BarItem("Playing a replay", 0, "", false));
+            else if (recording) replay.children.push_back(BarItem("Recording input", 0, "", false));
+            replay.children.push_back(BarItem("Record input...", kBarRecordInput, "", !port.replay.playing && !recording));
+            replay.children.push_back(BarItem("Play input...", kBarPlayInput));
+            replay.children.push_back(BarItem("Stop replay/record", kBarStopReplay, "", port.replay.playing || recording));
+            replay.enabled = !online;
+            auto shot = std::find_if(game.begin(), game.end(), [](const recomp::BarEntry &e) { return e.id == kBarScreenshot; });
+            game.insert(shot == game.end() ? game.end() : shot + 1, std::move(replay));
+        }
+        std::vector<recomp::BarEntry> &video = menus[1].entries;
+        if (!video.empty()) {
+            video.push_back(recomp::BarEntry::Line());
+        }
+        video.push_back(BarItem("Fullscreen", kBarFullscreen, "F11"));
+        video.back().mark = fullscreen ? recomp::BarEntry::Check : recomp::BarEntry::NoMark;
+        menus[3].entries.push_back(recomp::BarEntry::Line());
+        menus[3].entries.push_back(BarItem("Controls: in the launcher", 0, "", false));
+        recomp::BarEntry keys = BarItem("Keys", 0);
+        for (const auto &key : kBarKeys) {
+            keys.children.push_back(BarItem(key[0], kBarKey, key[1]));
+        }
+        menus[5].entries.push_back(std::move(keys));
+        menus[5].entries.push_back(BarItem("About", kBarAbout));
+        // Online, what would change the match is dim (as the in-game menu says): the save states, Reset, the features
+        if (online) {
+            for (recomp::BarMenu &menu : menus) {
+                for (recomp::BarEntry &entry : menu.entries) {
+                    const std::string &l = entry.label;
+                    if (menu.title == "Features" || l == "Save state" || l == "Load state" || l == "Quick save" || l == "Quick load" ||
+                        l == "Reset game" || l == "Player 2 joins") {
+                        entry.enabled = false;
+                    }
+                }
+            }
+        }
+        menus.erase(std::remove_if(menus.begin(), menus.end(), [](const recomp::BarMenu &m) { return m.entries.empty(); }), menus.end());
+        if (copy) *copy = menus;
+        bar.Configure(std::move(menus));
+    }
+    int BarDot(int windowHeight) {
+        // (a window opens the board's lines and the bar's dots tall, so many times: a dot is as many pixels)
+        return std::max(1, windowHeight / (Video::kHeight + recomp::MenuBar::kHeightDots));
+    }
+    int BarStrip(int windowHeight) {
+        return recomp::MenuBar::kHeightDots * BarDot(windowHeight);
+    }
+    // (the bar and its open menus over the whole window, transparent elsewhere: the presenter's overlay)
+    void BarPicture(const recomp::MenuBar &bar, int width, int height, std::vector<uint32_t> &pixels) {
+        pixels.assign(static_cast<size_t>(std::max(width, 0)) * std::max(height, 0), 0xFF000000u);
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        bar.Draw(pixels.data(), width, height);
+        std::vector<SDL_Rect> regions;
+        if (bar.BarShown()) {
+            regions.push_back({0, 0, width, bar.Height()});
+        }
+        for (const recomp::MenuBar::Box &box : bar.Boxes()) {
+            regions.push_back({static_cast<int>(box.x), static_cast<int>(box.y), static_cast<int>(std::ceil(box.w)), static_cast<int>(std::ceil(box.h))});
+        }
+        std::vector<uint32_t> drawn(pixels.size(), 0);
+        for (const SDL_Rect &r : regions) {
+            for (int y = std::max(r.y, 0); y < std::min(r.y + r.h, height); y++) {
+                for (int x = std::max(r.x, 0); x < std::min(r.x + r.w, width); x++) {
+                    drawn[static_cast<size_t>(y) * width + x] = pixels[static_cast<size_t>(y) * width + x];
+                }
+            }
+        }
+        pixels.swap(drawn);
+    }
+
 } // namespace
 
 int RunWindowed(Port &port) {
@@ -331,7 +453,8 @@ int RunWindowed(Port &port) {
     // (in a Multi game run, a window where the game before's was: a full screen one is full screen as asked)
     Placement placed;
     const bool carried = !MultiGame().empty() && TakePlacement(placed) && !port.opt.fullscreen;
-    const int windowHeight = carried ? placed.height : Video::kHeight * scale;
+    // (ForkAde: and the menu bar's strip above the picture)
+    const int windowHeight = carried ? placed.height : Video::kHeight * scale + recomp::MenuBar::kHeightDots * scale;
     // The window, as an OpenGL window for a shader (shading.h: nothing else draws to it), `at` a place for it (`width`
     // 0: as wide as the picture's shape makes it)
     auto makeWindow = [&](bool opengl, const Placement *at, int width, int height, bool fullscreen) {
@@ -412,7 +535,9 @@ int RunWindowed(Port &port) {
     if (offscreen) {
         preset.clear();
     }
-    SDL_Window *window = offscreen ? nullptr : makeWindow(!preset.empty(), carried ? &placed : nullptr, 0, windowHeight, port.opt.fullscreen);
+    SDL_Window *window = offscreen ? nullptr : makeWindow(!preset.empty(), carried ? &placed : nullptr,
+                                                          carried ? 0 : static_cast<int>(std::lround(Video::kHeight * scale * windowShape(columns))),
+                                                          windowHeight, port.opt.fullscreen);
     // (the checks, CPS3RECOMP_WINDOW_SIZE=WxH: the window that size, as a full screen of that shape would be)
     if (getenv("CPS3RECOMP_WINDOW_SIZE") && window && checkWidth > 0 && checkHeight > 0) {
         SDL_SetWindowSize(window, checkWidth, checkHeight);
@@ -667,6 +792,113 @@ int RunWindowed(Port &port) {
             fprintf(stderr, "state %d: %s\n", port.menu.Slot(), error.c_str());
         }
     };
+    // (ForkAde) The menu bar: F10 or Alt, a click on its strip, or a right click on the picture (its menus as a popup).
+    // While one of its menus is open the game stands still, as with the in-game menu
+    recomp::MenuBar bar;
+    std::vector<uint32_t> barPixels;
+    bool barDirty = true, barRevealed = false, barPopup = false, barWasOpen = false, barHeldPause = false;
+    int barWidth = 0, barHeight = 0;
+    auto showBar = [&]() {
+        const bool shown = !window || !IsFullScreen(window) || barRevealed || (bar.IsOpen() && !barPopup);
+        if (shown != bar.BarShown()) {
+            bar.ShowBar(shown);
+            barDirty = true;
+        }
+    };
+    auto barOpened = [&](bool popup = false) {
+        BarMenus(port, bar, window && IsFullScreen(window));
+        barPopup = popup;
+        barDirty = true;
+    };
+    auto barChose = [&](const recomp::MenuBar::Chosen &chosen) {
+        barDirty = true;
+        heldAtClose = previousPad;
+        if (!chosen.chosen) {
+            return;
+        }
+        if (recomp::IsMenuEntry(chosen.id)) {
+            port.MenuAct(port.menu.Choose(chosen.id));
+        } else if (chosen.id == kBarQuickSave || chosen.id == kBarQuickLoad) {
+            quickState(chosen.id == kBarQuickSave);
+        } else if (chosen.id == kBarFullscreen && window) {
+            GoFullScreen(window, !IsFullScreen(window));
+            barRevealed = false;
+        } else if (chosen.id == kBarScreenshot) {
+            port.Screenshot();
+        } else if (chosen.id == kBarAbout) {
+            port.menu.Note("Street Fighter III by sf3comp (Tommy McLeroy), with ForkAde's menu bar.");
+        } else if ((chosen.id == kBarRecordInput || chosen.id == kBarPlayInput) && window) {
+            const std::string folder = port.ReplayFolder();
+            if (!folder.empty()) SDL_CreateDirectory(folder.c_str());
+            const std::string where = chosen.id == kBarRecordInput ? port.ProposedReplayPath() : folder;
+            void *kind = reinterpret_cast<void *>(static_cast<intptr_t>(chosen.id));
+            if (chosen.id == kBarRecordInput) SDL_ShowSaveFileDialog(ReplayDialogDone, kind, window, kReplayFilter, 1, where.empty() ? nullptr : where.c_str());
+            else SDL_ShowOpenFileDialog(ReplayDialogDone, kind, window, kReplayFilter, 1, where.empty() ? nullptr : where.c_str(), false);
+        } else if (chosen.id == kBarStopReplay) {
+            port.StopReplayOrRecord();
+        }
+        BarMenus(port, bar, window && IsFullScreen(window));
+    };
+    // (a file chosen in a replay dialog: recorded to, or played)
+    auto replayDialogs = [&] {
+        int kind = 0;
+        std::string path;
+        {
+            std::lock_guard<std::mutex> hold(replayDialog.lock);
+            if (!replayDialog.answered) return;
+            replayDialog.answered = false;
+            kind = replayDialog.kind;
+            path = replayDialog.path;
+        }
+        if (path.empty()) return; // (cancelled)
+        if (kind == kBarRecordInput && (path.size() < 4 || path.substr(path.size() - 4) != ".s3r")) path += ".s3r";
+        std::string error;
+        if (!(kind == kBarRecordInput ? port.RecordInputTo(path, error) : port.PlayInput(path, error))) {
+            port.menu.Note(error);
+            fprintf(stderr, "replay: %s\n", error.c_str());
+        }
+        barDirty = true;
+    };
+    // (the pointer's place in the window's pixels: events give it in the window's points)
+    auto pixelsOf = [&](float x, float y, float &px, float &py) {
+        const float density = window && SDL_GetWindowPixelDensity(window) > 0 ? SDL_GetWindowPixelDensity(window) : 1.0f;
+        px = x * density;
+        py = y * density;
+    };
+    bool altAlone = false;
+    // (the checks, CPS3RECOMP_BAR_SHOT=TICK:FILE: at that loop's pass the bar's Game menu is opened at its Replay
+    // submenu, drawn to FILE (PNG) and its entries listed)
+    const char *barShot = getenv("CPS3RECOMP_BAR_SHOT");
+    const uint64_t barShotAt = barShot ? strtoull(barShot, nullptr, 10) : 0;
+    uint64_t barLoops = 0;
+    auto barShotNow = [&] {
+        if (!barShot || ++barLoops != barShotAt || !window) return;
+        const char *file = strchr(barShot, ':');
+        std::vector<recomp::BarMenu> menus;
+        BarMenus(port, bar, IsFullScreen(window), &menus);
+        int width = 0, height = 0;
+        SDL_GetWindowSizeInPixels(window, &width, &height);
+        bar.SetArea(width, height, BarDot(height));
+        bar.OpenMenu(0);
+        int downs = 0;
+        bool found = false;
+        for (const recomp::BarEntry &e : menus[0].entries) {
+            if (e.label == "Replay") { found = e.enabled; break; }
+            if (!e.IsLine() && e.enabled) downs++;
+        }
+        for (int i = 0; found && i < downs; i++) bar.Buttons(recomp::kMenuDown);
+        if (found) bar.Buttons(recomp::kMenuRight);
+        for (const recomp::BarMenu &menu : menus) fprintf(stderr, "bar: %s (%zu entries)\n", menu.title.c_str(), menu.entries.size());
+        for (const recomp::BarEntry &e : menus[0].entries)
+            if (e.label == "Replay")
+                for (const recomp::BarEntry &c : e.children) fprintf(stderr, "bar: Replay > %s%s\n", c.label.c_str(), c.enabled ? "" : " (dim)");
+        std::vector<uint32_t> pixels;
+        BarPicture(bar, width, height, pixels);
+        if (file && WritePng(file + 1, pixels.data(), static_cast<uint32_t>(width), static_cast<uint32_t>(height)))
+            fprintf(stderr, "bar: drawn to %s\n", file + 1);
+        bar.Close();
+        barDirty = true;
+    };
     // A Multi game run (the launcher's Multi game page): N or a gamepad's left shoulder for the next game, F or
     // the left trigger held to fast-forward (each when the player has not given it to the game)
     const bool multi = !MultiGame().empty();
@@ -714,6 +946,20 @@ int RunWindowed(Port &port) {
         if (port.typing && (!port.net || port.connecting)) {
             chatOpen(false); // (the match over, or waited for again)
         }
+        replayDialogs();
+        barShotNow();
+        if (bar.IsOpen() != barWasOpen) {
+            // (ForkAde: the game stands still while the bar's menu is open, and goes on as it was after; online it goes on)
+            barWasOpen = bar.IsOpen();
+            if (!port.net) {
+                if (barWasOpen) {
+                    barHeldPause = port.paused;
+                    port.paused = true;
+                } else {
+                    port.paused = barHeldPause;
+                }
+            }
+        }
         while (SDL_PollEvent(&ev)) {
             if (touch.Event(ev)) {
                 continue;
@@ -747,7 +993,74 @@ int RunWindowed(Port &port) {
             }
             switch (ev.type) {
             case SDL_EVENT_QUIT: running = false; break;
+            case SDL_EVENT_MOUSE_MOTION: {
+                float x, y;
+                pixelsOf(ev.motion.x, ev.motion.y, x, y);
+                if (window && IsFullScreen(window)) {
+                    // (at the top edge the bar comes; below it, with none of its menus open, it goes)
+                    if (y < 4) {
+                        barRevealed = true;
+                    } else if (y >= bar.Height() && !bar.IsOpen()) {
+                        barRevealed = false;
+                    }
+                    showBar();
+                }
+                if (bar.IsOpen() && !port.menu.IsOpen()) {
+                    barDirty = bar.Pointer(x, y) || barDirty;
+                }
+                break;
+            }
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                if (!port.menu.IsOpen()) {
+                    float x, y;
+                    pixelsOf(ev.button.x, ev.button.y, x, y);
+                    if (ev.button.button == SDL_BUTTON_LEFT && (bar.IsOpen() || bar.Hit(x, y))) {
+                        if (!bar.IsOpen()) {
+                            barOpened();
+                        }
+                        barChose(bar.Click(x, y));
+                    } else if (ev.button.button == SDL_BUTTON_RIGHT) {
+                        barOpened(true);
+                        bar.OpenPopup(x, y);
+                    } else if (bar.IsOpen()) {
+                        bar.Close();
+                        barDirty = true;
+                    }
+                }
+                break;
+            case SDL_EVENT_KEY_UP:
+                if ((ev.key.scancode == SDL_SCANCODE_LALT || ev.key.scancode == SDL_SCANCODE_RALT) && altAlone &&
+                    !KeyBound(ev.key.scancode) && !port.menu.IsOpen()) {
+                    if (bar.IsOpen()) {
+                        bar.Close();
+                        barDirty = true;
+                    } else {
+                        barOpened();
+                        bar.OpenMenu(0);
+                    }
+                }
+                altAlone = false;
+                break;
             case SDL_EVENT_KEY_DOWN:
+                if (!ev.key.repeat) {
+                    altAlone = ev.key.scancode == SDL_SCANCODE_LALT || ev.key.scancode == SDL_SCANCODE_RALT;
+                }
+                if (bar.IsOpen() && !port.menu.IsOpen()) {
+                    // (the bar's menu open: Esc closes a level of it, F10 the bar; the arrows, Enter and Backspace work
+                    // it below, as the in-game menu's do; nothing reaches the game)
+                    if (ev.key.scancode == SDL_SCANCODE_ESCAPE) {
+                        barChose(bar.Buttons(recomp::kMenuBack));
+                    } else if (ev.key.scancode == SDL_SCANCODE_F10) {
+                        bar.Close();
+                        barDirty = true;
+                    }
+                    break;
+                }
+                if (ev.key.scancode == SDL_SCANCODE_F10 && !KeyBound(SDL_SCANCODE_F10) && !port.menu.IsOpen() && !ev.key.repeat) {
+                    barOpened();
+                    bar.OpenMenu(0);
+                    break;
+                }
                 if (!port.menu.IsOpen() && !ev.key.repeat &&
                     (ev.key.scancode == SDL_SCANCODE_Q || ev.key.scancode == SDL_SCANCODE_E || ev.key.scancode == SDL_SCANCODE_W) &&
                     KeyZoomHeld(SDL_GetKeyboardState(nullptr))) {
@@ -970,7 +1283,13 @@ int RunWindowed(Port &port) {
             if (both) {
                 menuPressed = 0;
             }
-            if (port.menu.IsOpen()) {
+            if (bar.IsOpen() && !port.menu.IsOpen()) {
+                // (ForkAde: the bar's menu, worked as the in-game menu is; the game's controls let go meanwhile)
+                if (menuPressed) {
+                    barChose(bar.Buttons(menuPressed));
+                }
+                heldAtClose = previousPad;
+            } else if (port.menu.IsOpen()) {
                 if (menuPressed) {
                     port.MenuAct(port.menu.Press(menuPressed));
                     menuDirty = true;
@@ -1009,10 +1328,13 @@ int RunWindowed(Port &port) {
                 if (!IsFullScreen(window) && !(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) {
                     int windowWidth = 0, windowHeight = 0;
                     SDL_GetWindowSize(window, &windowWidth, &windowHeight);
+                    // (the picture's part: below the menu bar's strip)
+                    int pictureHeight = windowHeight - recomp::MenuBar::kHeightDots * std::max(1, windowHeight / (Video::kHeight + recomp::MenuBar::kHeightDots));
                     if (size != shownSize) {
-                        windowHeight = Video::kHeight * size;
+                        pictureHeight = Video::kHeight * size;
+                        windowHeight = pictureHeight + recomp::MenuBar::kHeightDots * size;
                     }
-                    SDL_SetWindowSize(window, static_cast<int>(std::lround(windowHeight * windowShape(now))), windowHeight);
+                    SDL_SetWindowSize(window, static_cast<int>(std::lround(pictureHeight * windowShape(now))), windowHeight);
                 }
                 shownColumns = now;
                 shownShape = DisplayShape();
@@ -1052,7 +1374,10 @@ int RunWindowed(Port &port) {
         presenter.SetScaling(DisplayScaling());
         // (full screen in the arcade's resolution: the picture fills the screen's mode, whose shape the monitor gives it)
         const bool arcadeScreen = window && (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) && SDL_GetWindowFullscreenMode(window);
-        const SDL_FRect where = FitPicture(width, height, port.ShownWidth(), Video::kHeight, arcadeScreen ? Shape::Fill : DisplayShape(), DisplayScaling());
+        // (ForkAde: in a window, below the menu bar's strip; full screen, the whole screen)
+        const int barStrip = (window && IsFullScreen(window)) || arcadeScreen ? 0 : BarStrip(height);
+        SDL_FRect where = FitPicture(width, height - barStrip, port.ShownWidth(), Video::kHeight, arcadeScreen ? Shape::Fill : DisplayShape(), DisplayScaling());
+        where.y += barStrip;
         // (the Display page's bezels under the picture: made again when they, the window's size or the picture's place
         // change; none on the arcade monitor, which the picture fills)
         {
@@ -1098,6 +1423,16 @@ int RunWindowed(Port &port) {
         int touchWidth = 0, touchHeight = 0;
         if (touch.TakePicture(touchPicture, touchWidth, touchHeight)) {
             presenter.SetOverlay(touchPicture.empty() ? nullptr : touchPicture.data(), touchWidth, touchHeight);
+            barDirty = true; // (a touch screen's controls over it: the bar's picture again when they go)
+        }
+        showBar();
+        if (touchPicture.empty() && (barDirty || width != barWidth || height != barHeight)) {
+            bar.SetArea(width, height, BarDot(height));
+            BarPicture(bar, width, height, barPixels);
+            presenter.SetOverlay(barPixels.data(), width, height);
+            barDirty = false;
+            barWidth = width;
+            barHeight = height;
         }
 
         if (port.menu.IsOpen()) {
