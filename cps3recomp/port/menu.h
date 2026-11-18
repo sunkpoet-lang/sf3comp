@@ -47,6 +47,7 @@ public:
     Action Choose(int id);
     // The "Sound" row: the frontend plays nothing while this is set (--mute starts with it set)
     bool muted = false;
+    int volume = 100; // (ForkAde, game-volume-control: the level, 0-100 percent, recomp-common/volume.h)
     // The Replays page's rows after the game's commands' (the port's match replays): a title and what it says for
     // each, set before the menu is opened; Action::Replay with Replay(): which. `replayPlaying`: the first is the
     // row that stops the one being played

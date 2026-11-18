@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Tommy McLeroy. Part of cps3recomp (sf3comp); from cps2recomp.
 //
 // The in-game menu (menu.h): the shared menu told what a CPS-2 game's is made of.
+#include "../recomp-common/volume.h"
 #include "menu.h"
 
 #include <cstring>
@@ -111,10 +112,13 @@ recomp::MenuConfig Menu::Config(bool withStates) {
     }
     Speeds(config);
     config.speedDescription = "Left/Right: slow motion, or faster than the board. While playing, P (or a click of the right stick) stops "
-                              "the game and starts it again; O (or, once stopped, the left trigger) goes on by one frame; - and = change "
+                              "the game and starts it again; O (or, once stopped, the left trigger) goes on by one frame; [ and ] change "
                               "the speed.";
     config.muted = [this] { return muted; };
     config.setMuted = [this](bool to) { muted = to; };
+    // (ForkAde, game-volume-control: the Sound row's level, and the menu bar's Louder and Quieter)
+    config.volume = [this] { return volume; };
+    config.setVolume = [this](int percent) { volume = recomp::ClampVolume(percent); };
     config.confirmName = "Enter or A";
     config.closeName = "Esc";
     return config;
@@ -191,7 +195,18 @@ void Menu::AddBarEntries(std::vector<recomp::BarMenu> &menus, bool withStates, c
     m_config = Config(withStates);
     m_menu.Configure(m_config);
     recomp::AddMenuEntries(menus, m_config, m_menu, options);
-    auto video = std::find_if(menus.begin(), menus.end(), [](const recomp::BarMenu &m) { return m.title == "Video"; });
+    // (ForkAde, game-volume-control) The Game page's Sound row in the bar's Audio menu: Mute, Louder (N%) and Quieter
+    // (the shared bar takes only the first page's rows; these entries are chosen through m_config as any other)
+    {
+        recomp::MenuConfig sound;
+        sound.groups.push_back({{recomp::MenuRow::Mute, 0, ""}});
+        sound.muted = m_config.muted;
+        sound.setMuted = m_config.setMuted;
+        sound.volume = m_config.volume;
+        sound.setVolume = m_config.setVolume;
+        recomp::AddMenuEntries(menus, sound, m_menu, options);
+    }
+    auto video =std::find_if(menus.begin(), menus.end(), [](const recomp::BarMenu &m) { return m.title == "Video"; });
     if (video == menus.end()) {
         return;
     }

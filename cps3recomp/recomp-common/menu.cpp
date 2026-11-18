@@ -5,6 +5,7 @@
 
 #include "i18n.h"
 #include "text.h"
+#include "volume.h"
 
 #include <algorithm>
 #include <cmath>
@@ -259,6 +260,14 @@ Menu::Chosen Menu::Buttons(unsigned pressed) {
         return {};
     }
     if (row.kind == kRowMute && step) {
+        // ((ForkAde's fork) the Sound row: Left and Right the level, a press muting and unmuting)
+        if (m_config.volume && m_config.setVolume && !press) {
+            m_config.setVolume(StepVolume(m_config.volume(), step));
+            if (m_config.muted()) {
+                m_config.setMuted(false);
+            }
+            return {};
+        }
         m_config.setMuted(!m_config.muted());
         return {};
     }
@@ -376,6 +385,16 @@ void Menu::Draw(uint32_t *pixels, int width, int height) const {
             rowDescription = Tr(m_config.speedDescription);
             break;
         case kRowMute:
+            if (m_config.volume && m_config.setVolume) {
+                // ((ForkAde's fork) the Sound row)
+                title = Tr("Sound");
+                value = m_config.muted() ? std::string(Tr("Muted")) : std::to_string(m_config.volume()) + "%";
+                valueColor = m_config.muted() || m_config.volume() != kVolumeFull ? on : dim;
+                rowDescription = Tr("Left/Right: the game's level, in 5 percent steps (100% is the sound as the game makes it). "
+                                    "A press mutes it, and again brings it back. While playing, - and = (or the keypad's - "
+                                    "and +) change the level too.");
+                break;
+            }
             title = Tr("Mute");
             value = Tr(m_config.muted() ? "On" : "Off");
             valueColor = m_config.muted() ? on : dim;

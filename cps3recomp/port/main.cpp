@@ -17,6 +17,7 @@
 #include "../recomp-common/proxy.h"
 #include "../recomp-common/settings.h"
 #include "../recomp-common/text.h"
+#include "../recomp-common/volume.h"
 
 #include <SDL3/SDL_main.h> // (on Windows the game is a windowed program: its main is called from WinMain)
 
@@ -1156,6 +1157,9 @@ void Port::ShownOver(std::vector<uint32_t> &pixels, std::vector<SDL_Rect> *panel
         }
     }
     // (what the camera's zoom was set to, for a few seconds: above that if both are said)
+    if (tick < volumeNoteUntil) {
+        status(volumeNote.c_str(), said++ * 14); // (ForkAde, game-volume-control: the level, as - and = changed it)
+    }
     if (*zoom.Label()) {
         status(zoom.Label(), said++ * 14);
     }
@@ -2325,6 +2329,35 @@ void Port::RunFrame() {
     }
 }
 
+// (ForkAde, game-volume-control) The level: - and = (and the keypad's - and +) a step at a time, the sound back on
+// if it was muted, the new level said for a second
+void Port::ChangeVolume(int steps) {
+    menu.volume = recomp::StepVolume(menu.volume, steps);
+    menu.muted = false;
+    volumeNote = "VOLUME " + std::to_string(menu.volume) + "%";
+    volumeNoteUntil = tick + 60;
+}
+
+int Port::KeptVolume() const {
+    if (opt.settingsPath.empty()) {
+        return recomp::kVolumeFull;
+    }
+    recomp::Ini settings(opt.settingsPath);
+    settings.load();
+    const std::string kept = settings.get("audio", "volume");
+    return kept.empty() ? recomp::kVolumeFull : recomp::ClampVolume(atoi(kept.c_str()));
+}
+
+void Port::KeepVolume() const {
+    if (opt.settingsPath.empty() || KeptVolume() == menu.volume) {
+        return;
+    }
+    recomp::Ini settings(opt.settingsPath);
+    settings.load(); // (the rest of settings.ini kept as it is)
+    settings.set("audio", "volume", std::to_string(menu.volume));
+    settings.save();
+}
+
 void Port::Finish() {
     ReplayEnd();
     if (net && !connecting) {
@@ -2514,6 +2547,8 @@ bool ParseArgs(int argc, char **argv, port::Options &o) {
             o.fullscreen = false; // (the Multi game page's, after what the game's own Play says)
         } else if (a == "--mute") {
             o.mute = true;
+        } else if (a == "--volume") {
+            o.volume = std::clamp(atoi(next()), 0, 100); // (ForkAde, game-volume-control)
         } else if (a == "--unthrottled") {
             o.unthrottled = true;
         } else if (a == "--headless") {

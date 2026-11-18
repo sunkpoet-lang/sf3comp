@@ -12,6 +12,7 @@
 
 #include "../runtime/game.h"
 #include "../recomp-common/gamepads.h"
+#include "../recomp-common/volume.h"
 
 #include <SDL3/SDL.h>
 
@@ -304,7 +305,7 @@ namespace {
     const char *const kBarKeys[][2] = {
         {"In-game menu", "Esc, F1"}, {"Menu bar", "F10, Alt"}, {"Quick save", "F5"}, {"Quick load", "F9"}, {"Slot before, next", "F6, F7"},
         {"Screenshot", "F12"}, {"Fullscreen", "F11"}, {"Test switch", "F2"}, {"Pause", "P"}, {"One frame", "O"},
-        {"Slower, faster", "-, ="}, {"Restart", "Backspace"},
+        {"Slower, faster", "[, ]"}, {"Restart", "Backspace"}, {"Quieter, louder", "-, ="},
     };
     recomp::BarEntry BarItem(const char *label, int id, const char *shortcut = "", bool enabled = true) {
         recomp::BarEntry e;
@@ -671,7 +672,15 @@ int RunWindowed(Port &port) {
     // (--mute starts with no sound; the menu's Sound row switches it on, so the device is opened all the same)
     SDL_AudioStream *audio = nullptr;
     port.menu.muted = port.opt.mute;
-    bool silent = false;
+    // (ForkAde, game-volume-control) the level: --volume, or the one kept; the streams' gain follows it (and mute) over
+    // a few frames, so a change does not click; at 100 percent the gain is exactly 1, the sound as it always was
+    port.menu.volume = port.opt.volume >= 0 ? ::recomp::ClampVolume(port.opt.volume) : port.KeptVolume();
+    float gainNow = 1.0f, musicGainNow = 1.0f;
+    const auto gainToward = [&](float &now) {
+        const float wanted = port.menu.muted || audioLog ? 0.0f : ::recomp::VolumeGain(port.menu.volume);
+        now += std::clamp(wanted - now, -0.25f, 0.25f);
+        return now;
+    };
     // (for the checks, CPS3RECOMP_AUDIO_SINK=FILE:RATE[:QUANTUM]: no sound device; the stream is taken by the clock as a
     // device at RATE would take it, QUANTUM frames at a time (as PipeWire's quantum), and what it plays written to FILE,
     // 16-bit stereo; a quantum the stream could not fill is counted, and silence written for what was missing.
@@ -745,7 +754,6 @@ int RunWindowed(Port &port) {
     SDL_AudioStream *music = nullptr;
     SDL_AudioSpec musicSpec{SDL_AUDIO_F32, 2, 0};
     std::vector<float> musicMade;
-    bool musicSilent = false;
 
     std::vector<SDL_Gamepad *> gamepads;
     // The in-game menu: opened and closed by Esc, F1, a gamepad stick's click or its Start and Select
@@ -933,6 +941,9 @@ int RunWindowed(Port &port) {
         for (int i = 0; found && i < downs; i++) bar.Buttons(recomp::kMenuDown);
         if (found) bar.Buttons(recomp::kMenuRight);
         for (const recomp::BarMenu &menu : menus) fprintf(stderr, "bar: %s (%zu entries)\n", menu.title.c_str(), menu.entries.size());
+        for (const recomp::BarMenu &menu : menus)
+            if (menu.title == "Audio") // (ForkAde, game-volume-control: Mute, Louder and Quieter)
+                for (const recomp::BarEntry &e : menu.entries) fprintf(stderr, "bar: Audio > %s%s\n", e.label.c_str(), e.IsLine() || e.enabled ? "" : " (dim)");
         for (const recomp::BarEntry &e : menus[0].entries)
             if (e.label == "Replay")
                 for (const recomp::BarEntry &c : e.children) fprintf(stderr, "bar: Replay > %s%s\n", c.label.c_str(), c.enabled ? "" : " (dim)");
@@ -1159,8 +1170,12 @@ int RunWindowed(Port &port) {
                     port.Key('p'); // stops the game, and starts it again
                 } else if (!port.menu.IsOpen() && ev.key.scancode == SDL_SCANCODE_O) {
                     port.Key('o'); // on by one frame (held: frame after frame)
-                } else if (ev.key.scancode == SDL_SCANCODE_MINUS || ev.key.scancode == SDL_SCANCODE_EQUALS) {
-                    port.Key(ev.key.scancode == SDL_SCANCODE_MINUS ? '-' : '='); // slower, faster
+                } else if (ev.key.scancode == SDL_SCANCODE_MINUS || ev.key.scancode == SDL_SCANCODE_EQUALS ||
+                           ev.key.scancode == SDL_SCANCODE_KP_MINUS || ev.key.scancode == SDL_SCANCODE_KP_PLUS) {
+                    // (ForkAde, game-volume-control: the level, as Fightcade has it; online too)
+                    port.ChangeVolume(ev.key.scancode == SDL_SCANCODE_MINUS || ev.key.scancode == SDL_SCANCODE_KP_MINUS ? -1 : 1);
+                } else if (ev.key.scancode == SDL_SCANCODE_LEFTBRACKET || ev.key.scancode == SDL_SCANCODE_RIGHTBRACKET) {
+                    port.Key(ev.key.scancode == SDL_SCANCODE_LEFTBRACKET ? '-' : '='); // slower, faster
                 } else if (!port.menu.IsOpen() && ev.key.scancode == SDL_SCANCODE_BACKSPACE && !ev.key.repeat) {
                     port.Key('k', kKeyRestart);
                 } else if (!port.menu.IsOpen() && ev.key.scancode == SDL_SCANCODE_BACKSLASH && !ev.key.repeat) {
@@ -1572,9 +1587,11 @@ int RunWindowed(Port &port) {
         }
 
         drainSink(); // (the checks' sink: what a device would have taken by now)
-        if (audio && silent != (port.menu.muted || audioLog)) {
-            silent = port.menu.muted || audioLog;
-            SDL_SetAudioStreamGain(audio, silent ? 0.0f : 1.0f);
+        if (audio) {
+            const float before = gainNow;
+            if (gainToward(gainNow) != before || SDL_GetAudioStreamGain(audio) != gainNow) {
+                SDL_SetAudioStreamGain(audio, gainNow);
+            }
         }
         std::vector<int16_t> &made = port.machine->audio;
         if (audio && ran && !made.empty()) {
@@ -1622,9 +1639,11 @@ int RunWindowed(Port &port) {
                 }
             }
             if (music && !musicMade.empty()) {
-                if (musicSilent != (port.menu.muted || audioLog)) {
-                    musicSilent = port.menu.muted || audioLog;
-                    SDL_SetAudioStreamGain(music, musicSilent ? 0.0f : 1.0f);
+                {
+                    const float before = musicGainNow;
+                    if (gainToward(musicGainNow) != before || SDL_GetAudioStreamGain(music) != musicGainNow) {
+                        SDL_SetAudioStreamGain(music, musicGainNow);
+                    }
                 }
                 double waiting = SDL_GetAudioStreamQueued(music) / (8.0 * musicSpec.freq) / pace;
                 if (waiting > kAudioMost) {
@@ -1691,6 +1710,7 @@ int RunWindowed(Port &port) {
             WritePng(shot, pixels.data(), static_cast<uint32_t>(width), static_cast<uint32_t>(height));
         }
     }
+    port.KeepVolume(); // (ForkAde, game-volume-control: the level, for next time)
     for (SDL_Gamepad *gp : gamepads) {
         SDL_CloseGamepad(gp);
     }
