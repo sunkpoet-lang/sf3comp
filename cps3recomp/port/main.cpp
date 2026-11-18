@@ -941,6 +941,47 @@ bool Port::Tick() {
     return true;
 }
 
+namespace {
+// (ForkAde, online-hud) Whether the game gives a round's result, and so the strip counts win streaks: not yet in
+// sf3comp (its fight module has no round results: Port::Streaks)
+constexpr bool kRoundResults = false;
+
+// (ForkAde, online-hud) A part of the names' strip at the top, in its colour (recomp::text::Palette)
+struct StripPart {
+    std::string text;
+    recomp::text::Color colour;
+};
+
+// A name as the strip shows it: 12 letters at most (UTF-8's continuation bytes are not letters)
+std::string StripName(const std::string &name) {
+    size_t letters = 0, at = 0;
+    for (; at < name.size(); at++) {
+        if ((static_cast<unsigned char>(name[at]) & 0xC0) != 0x80 && letters++ == 12) {
+            break;
+        }
+    }
+    return name.substr(0, at);
+}
+
+// The strip: its parts two spaces apart, centred in rows 0-9 on the see-through band, as the CPS games draw it
+void DrawStrip(const recomp::text::Canvas &canvas, int across, const std::vector<StripPart> &parts, std::vector<SDL_Rect> *panels) {
+    const float gap = recomp::text::TextWidth("  ", 1);
+    float width = -gap;
+    for (const StripPart &part : parts) {
+        width += recomp::text::TextWidth(part.text.c_str(), 1) + gap;
+    }
+    float x = std::floor((across - width) / 2);
+    canvas.Fill(x - 4, 0, width + 8, 10, recomp::text::Palette::kBand);
+    if (panels) {
+        panels->push_back({static_cast<int>(x) - 4, 0, static_cast<int>(width) + 9, 10});
+    }
+    for (const StripPart &part : parts) {
+        canvas.Text(x, 1, 1, 0, part.colour, part.text.c_str());
+        x += recomp::text::TextWidth(part.text.c_str(), 1) + gap;
+    }
+}
+} // namespace
+
 void Port::Shown(std::vector<uint32_t> &pixels, std::vector<SDL_Rect> *panels) const {
     const Machine &m = *machine;
     pixels.assign(m.Picture(), m.Picture() + ShownWidth() * Video::kHeight);
@@ -1133,40 +1174,46 @@ void Port::ShownOver(std::vector<uint32_t> &pixels, std::vector<SDL_Rect> *panel
         status(text.c_str(), said++ * 14);
     }
     if (sessionPlaying) {
+        // (as the CPS games have it, online-hud: at the top left, in the small yellow font on the see-through band, out
+        // of the names' strip's way)
+        using recomp::text::Palette;
         const recomp::text::Canvas canvas{pixels.data(), across, Video::kHeight};
-        const std::string label = session.spectating ? "WATCHING" : session.watching > 0 ? "WATCHING: " + std::to_string(session.watching) : "";
+        const std::string label = session.spectating ? "WATCHING" : session.watching > 0 ? std::to_string(session.watching) + " WATCHING" : "";
         if (!label.empty()) {
-            const float width = recomp::text::TextWidth(label.c_str(), 1);
-            const float x = (across - width) / 2;
-            canvas.Fill(x - 3, 2, width + 6, 12, {20, 22, 30, 220});
-            canvas.Text(x, 4, 1, 0, {255, 210, 80, 255}, label.c_str());
+            const float width = recomp::text::SmallTextWidth(label.c_str());
+            const float step = recomp::text::kSmallLineHeight;
+            canvas.Fill(0, 0, width + 3, step, Palette::kBand);
+            canvas.SmallText(2, 1, Palette::kReadout, label.c_str());
             if (panels) {
-                panels->push_back({static_cast<int>(x) - 3, 2, static_cast<int>(width) + 7, 12});
+                panels->push_back({0, 0, static_cast<int>(width) + 4, static_cast<int>(step)});
             }
         }
     }
-    // (online: each player's name under their side's life bar, and under it a win streak of two or more)
+    // (online, ForkAde's online-hud as the CPS games have it: the players' names and win streaks in one strip at the
+    // top, see-through as Fightcade's: "Name1  N  VS  M  Name2", player 1 blue, player 2 red, the numbers white, VS
+    // grey; the streaks only where the game gives round results (Port::Streaks: sf3comp's fight module does not yet),
+    // online_hide_names leaves the names out)
     if ((net && !connecting) || sessionPlaying) {
         const recomp::text::Canvas canvas{pixels.data(), across, Video::kHeight};
-        auto under = [&](int side, float y, const std::string &text, recomp::text::Color colour) {
-            const float width = recomp::text::TextWidth(text.c_str(), 1);
-            const float x = side == 0 ? 10.0f : across - 10.0f - width;
-            canvas.Fill(x - 3, y - 2, width + 6, 12, {20, 22, 30, 220});
-            canvas.Text(x, y, 1, 0, colour, text.c_str());
-            if (panels) {
-                panels->push_back({static_cast<int>(x) - 3, static_cast<int>(y) - 2, static_cast<int>(width) + 7, 12});
-            }
-        };
-        for (int side = 0; side < 2; side++) {
-            float y = 38.0f;
-            const std::string name = net ? net->Name(side) : session.names[side];
-            if (!FeatureOn("online_hide_names") && !name.empty()) {
-                under(side, y, name, {255, 255, 255, 255});
-                y += 12;
-            }
-            if (streak[side] >= 2) {
-                under(side, y, "STREAK " + std::to_string(streak[side]), {255, 210, 80, 255});
-            }
+        using recomp::text::Palette;
+        const bool names = !FeatureOn("online_hide_names"), streaks = kRoundResults;
+        std::vector<StripPart> parts;
+        const std::string one = StripName(net ? net->Name(0) : session.names[0]), two = StripName(net ? net->Name(1) : session.names[1]);
+        if (names && !one.empty()) {
+            parts.push_back({one, Palette::kPlayer1});
+        }
+        if (streaks) {
+            parts.push_back({std::to_string(streak[0]), Palette::kNumber});
+        }
+        parts.push_back({"VS", Palette::kVersus});
+        if (streaks) {
+            parts.push_back({std::to_string(streak[1]), Palette::kNumber});
+        }
+        if (names && !two.empty()) {
+            parts.push_back({two, Palette::kPlayer2});
+        }
+        if (parts.size() > 1) {
+            DrawStrip(canvas, across, parts, panels);
         }
         // The chat: its lines at the left, above the super gauges, the newest lowest, and the line being typed under them
         float y = Video::kHeight - 44.0f;
