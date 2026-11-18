@@ -1242,6 +1242,21 @@ void Port::ShownOver(std::vector<uint32_t> &pixels, std::vector<SDL_Rect> *panel
             line(it->text, it->own ? recomp::text::Color{170, 200, 255, 255} : recomp::text::Color{255, 255, 255, 255});
         }
     }
+    // (ForkAde, online-hud) An online match's replay playing: "Name1  VS  Name2" in the online strip's style at the
+    // top (only the players, as Fightcade shows them; a side with no name: Player 1, Player 2), with the streaks where
+    // the game gives round results
+    if (replay.playing && replay.play.online) {
+        const recomp::text::Canvas canvas{pixels.data(), across, Video::kHeight};
+        using recomp::text::Palette;
+        const std::string one = replay.play.players[0].empty() ? "Player 1" : StripName(replay.play.players[0]);
+        const std::string two = replay.play.players[1].empty() ? "Player 2" : StripName(replay.play.players[1]);
+        std::vector<StripPart> parts = {{one, Palette::kPlayer1}, {"VS", Palette::kVersus}, {two, Palette::kPlayer2}};
+        if (kRoundResults) {
+            parts.insert(parts.begin() + 1, {std::to_string(streak[0]), Palette::kNumber});
+            parts.insert(parts.begin() + 3, {std::to_string(streak[1]), Palette::kNumber});
+        }
+        DrawStrip(canvas, across, parts, panels);
+    }
     // (online: Esc's question, in the middle, over the game, which goes on; the port's own, not the readout, which the
     // game's sources set every frame. --net-arcade's wait: whether to stop hosting, the game stopped meanwhile)
     if ((net || gekkoOnline) && leaving) {
@@ -2097,6 +2112,7 @@ void Port::Matched() {
     ReplayEnd();
     if (FeatureOn("match_replays")) {
         ReplayBegin(true);
+        replay.made.players = {net->Name(0), net->Name(1)}; // (ForkAde, online-hud: for the replay's strip)
         replay.made.label = "Online" + (net->Name(1 - net->Local()).empty() ? std::string() : " vs " + net->Name(1 - net->Local()));
         if (TheGame().matchLabel) {
             replay.made.label += "  " + TheGame().matchLabel();

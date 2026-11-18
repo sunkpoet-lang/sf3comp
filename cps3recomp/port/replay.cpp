@@ -21,7 +21,7 @@ namespace port {
 
 namespace {
     constexpr char kMagic[4] = {'S', '3', 'R', 'P'};
-    constexpr uint32_t kFormat = 1;
+    constexpr uint32_t kFormat = 2; // (2: the players' names after the features; 1 is read too)
 
     struct Out {
         std::vector<uint8_t> bytes;
@@ -152,6 +152,8 @@ bool Replay::Write(const std::string &path, const Data &data) {
         head.Text(name);
         head.U32(static_cast<uint32_t>(value));
     }
+    head.Text(data.players[0]);
+    head.Text(data.players[1]);
     Out body;
     body.U32(static_cast<uint32_t>(data.state.size()));
     body.Raw(data.state.data(), data.state.size());
@@ -191,7 +193,8 @@ bool Replay::Read(const std::string &path, Data &data, bool headOnly, std::strin
     In in{bytes};
     char magic[4] = {};
     in.Raw(magic, 4);
-    if (!in.ok || memcmp(magic, kMagic, 4) != 0 || in.U32() != kFormat) {
+    const uint32_t format = in.ok ? in.U32() : 0;
+    if (!in.ok || memcmp(magic, kMagic, 4) != 0 || format < 1 || format > kFormat) {
         error = "not a replay this build reads";
         return false;
     }
@@ -209,6 +212,10 @@ bool Replay::Read(const std::string &path, Data &data, bool headOnly, std::strin
     for (uint32_t n = 0; n < features && in.ok; n++) {
         std::string name = in.Text();
         data.features.push_back({std::move(name), static_cast<int>(in.U32())});
+    }
+    if (format >= 2) {
+        data.players[0] = in.Text();
+        data.players[1] = in.Text();
     }
     const uint32_t rawSize = in.U32(), packedSize = in.U32();
     if (!in.ok) {

@@ -42,6 +42,7 @@ struct Replay {
         int64_t when = 0;
         uint32_t frames = 0, fought = 0;
         bool online = false;
+        std::array<std::string, 2> players; // (ForkAde, online-hud: an online match's names, for the strip; format 2)
         std::vector<std::pair<std::string, int>> features;
         std::vector<uint8_t> state;
         std::map<uint32_t, Pads> changes;    // what the players held from each frame it changed at
